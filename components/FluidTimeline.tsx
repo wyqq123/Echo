@@ -1,0 +1,940 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Task, TaskCategory, TaskStatus, TaskIntent } from '../types';
+import { 
+  Plus, Snowflake, Trash2, RefreshCw, MapPin, X, GripHorizontal, 
+  ChevronLeft, ChevronRight, Check, Star, Save, Edit2, Tag, AlignLeft, Sparkles, FileText
+} from 'lucide-react';
+import { format, addDays, isSameDay } from 'date-fns';
+import confetti from 'canvas-confetti';
+import { generateId } from '../utils/helpers';
+
+interface Props {
+  tasks: Task[];
+  onToggleTask: (id: string) => void;
+  onUpdateTasks: (tasks: Task[]) => void;
+}
+
+// --- Constants & Helpers ---
+const HOUR_HEIGHT = 60;
+const SNAP_MINUTES = 15;
+const MINUTE_HEIGHT = HOUR_HEIGHT / 60;
+const HEADER_HEIGHT = 40; // Height of the sticky day header (h-10)
+
+const INTENT_CONFIG = [
+  { type: TaskIntent.BODY_MIND, color: 'bg-green-500/20 text-green-400 border-green-500/40' },
+  { type: TaskIntent.CAREER_BREAK, color: 'bg-purple-500/20 text-purple-400 border-purple-500/40' },
+  { type: TaskIntent.ACADEMIC_SPRINT, color: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },
+  { type: TaskIntent.DEEP_CONNECT, color: 'bg-red-500/20 text-red-400 border-red-500/40' },
+  { type: TaskIntent.WEALTH_CONTROL, color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40' },
+  { type: TaskIntent.INNER_WILD, color: 'bg-orange-500/20 text-orange-400 border-orange-500/40' },
+];
+
+// Convert time string "09:30" to minutes from 00:00
+const timeToMinutes = (time: string | undefined): number => {
+  if (!time) return 9 * 60; // Default 9am
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+};
+
+// Convert minutes to "HH:MM"
+const minutesToTime = (totalMinutes: number): string => {
+  const h = Math.floor(totalMinutes / 60);
+  const m = Math.floor(totalMinutes % 60);
+  return `${String(Math.max(0, Math.min(23, h))).padStart(2, '0')}:${String(Math.max(0, m)).padStart(2, '0')}`;
+};
+
+// Convert pixels to snapped minutes (Adjusted for Header Offset)
+const pxToMinutes = (px: number) => {
+  const contentPx = px - HEADER_HEIGHT; 
+  const rawMinutes = contentPx / MINUTE_HEIGHT;
+  return Math.round(rawMinutes / SNAP_MINUTES) * SNAP_MINUTES;
+};
+
+// Fluid Logic: Resolve collisions by pushing subsequent tasks down
+const resolveCollisions = (activeTask: Task, dayTasks: Task[]): Task[] => {
+  // 1. Create a list of all tasks on this day, including the active one
+  const otherTasks = dayTasks.filter(t => t.id !== activeTask.id);
+  const combined = [...otherTasks, activeTask];
+  
+  // 2. Sort by start time
+  combined.sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+  // 3. Iterate and push down
+  for (let i = 0; i < combined.length - 1; i++) {
+    const current = combined[i];
+    const next = combined[i + 1];
+
+    const currentStart = timeToMinutes(current.startTime);
+    const currentEnd = currentStart + current.duration;
+    const nextStart = timeToMinutes(next.startTime);
+
+    // If current task overlaps or pushes into the next task
+    if (currentEnd > nextStart) {
+      // Push the next task's start time to immediately follow the current task
+      const newNextStart = currentEnd;
+      next.startTime = minutesToTime(newNextStart);
+      // We keep the duration of the next task constant, it just slides down
+    }
+  }
+  return combined;
+};
+
+const getStartOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+export const fireAnchorCelebration = () => {
+  const count = 150;
+  const defaults = {
+    origin: { y: 0.7 },
+    spread: 360,
+    ticks: 100,
+    gravity: 0.8,
+    decay: 0.94,
+    startVelocity: 30,
+  };
+
+  function shoot() {
+    confetti({
+      ...defaults,
+      particleCount: 80,
+      scalar: 1.2,
+      shapes: ['star'],
+      colors: ['#FFD700', '#FFC107', '#FFF3E0'],
+    });
+
+    confetti({
+      ...defaults,
+      particleCount: 40,
+      scalar: 0.75,
+      shapes: ['circle'],
+      colors: ['#FFD700'],
+    });
+  }
+
+  shoot();
+  setTimeout(shoot, 200);
+};
+
+const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) => {
+  // --- Date State ---
+  const [anchorDate, setAnchorDate] = useState<Date>(getStartOfToday());
+  const leftDate = anchorDate;
+  const rightDate = addDays(anchorDate, 1);
+
+  // --- Data Splitting ---
+  const visibleTasks = tasks.filter(t => 
+    !t.isFrozen && t.startTime && t.dateStr && 
+    (t.dateStr === format(leftDate, 'yyyy-MM-dd') || t.dateStr === format(rightDate, 'yyyy-MM-dd'))
+  );
+
+  const drawerTasks = tasks.filter(t => 
+    !t.isFrozen && 
+    (
+      t.status === TaskStatus.DRAWER || 
+      (t.status === TaskStatus.PENDING && !t.isAnchor) || 
+      (!t.startTime && !t.dateStr)
+    )
+  );
+
+  const iceboxTasks = tasks.filter(t => t.isFrozen);
+
+  // --- Interaction State ---
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [iceboxModalType, setIceboxModalType] = useState<'shatter' | 'melt' | null>(null);
+  const [selectedIceboxTasks, setSelectedIceboxTasks] = useState<Set<string>>(new Set());
+
+  const [dragState, setDragState] = useState<{
+    id: string;
+    type: 'move' | 'resize';
+    startY: number;
+    originalStart: number;
+    originalDuration: number;
+    originalDateStr?: string;
+  } | null>(null);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // --- Handlers ---
+  const handleOpenIceboxModal = (type: 'shatter' | 'melt') => {
+    setIceboxModalType(type);
+    setSelectedIceboxTasks(new Set());
+  };
+
+  const handleCloseIceboxModal = () => {
+    setIceboxModalType(null);
+    setSelectedIceboxTasks(new Set());
+  };
+
+  const handleToggleIceboxTaskSelection = (taskId: string) => {
+    const newSelection = new Set(selectedIceboxTasks);
+    if (newSelection.has(taskId)) {
+      newSelection.delete(taskId);
+    } else {
+      newSelection.add(taskId);
+    }
+    setSelectedIceboxTasks(newSelection);
+  };
+
+  const handleConfirmIceboxAction = () => {
+    if (iceboxModalType === 'shatter') {
+      const remainingTasks = tasks.filter(t => !selectedIceboxTasks.has(t.id));
+      onUpdateTasks(remainingTasks);
+    } else if (iceboxModalType === 'melt') {
+      const updatedTask = tasks.map(t => {
+        if (selectedIceboxTasks.has(t.id)) {
+          return { 
+            ...t, 
+            isFrozen: false, 
+            status: TaskStatus.PENDING, 
+            startTime: undefined, 
+            dateStr: undefined
+          };
+        }
+        return t;
+      });
+      onUpdateTasks(updatedTask);
+    }
+    handleCloseIceboxModal();
+  };
+
+  const navigateDate = (direction: 'prev' | 'next') => {
+    setAnchorDate(prev => direction === 'prev' ? addDays(prev, -1) : addDays(prev, 1));
+  };
+
+  // 1. Right Click on Grid (Create New)
+  const handleGridContextMenu = (e: React.MouseEvent, dateStr: string) => {
+    e.preventDefault();
+    if (!containerRef.current) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const clickY = e.clientY - rect.top + containerRef.current.scrollTop;
+    
+    // Snap to 15m
+    const startMinutes = pxToMinutes(clickY);
+    
+    const newTask: Task = {
+      id: `temp-${Date.now()}`,
+      title: '',
+      category: TaskCategory.WORK,
+      status: TaskStatus.PENDING, // Default to normal task
+      isAnchor: false, // User must manually upgrade to Anchor
+      isFrozen: false,
+      completed: false,
+      duration: 60,
+      startTime: minutesToTime(Math.max(0, startMinutes)),
+      dateStr: dateStr
+    };
+
+    setEditingTask(newTask);
+    setIsModalOpen(true);
+  };
+
+  // 2. Right Click on Task (Edit)
+  const handleTaskContextMenu = (e: React.MouseEvent, task: Task) => {
+    e.preventDefault();
+    e.stopPropagation(); // Stop bubbling to grid
+    setEditingTask({ ...task });
+    setIsModalOpen(true);
+  };
+
+  // 3. Save Task (Modal)
+  const saveTask = () => {
+    if (!editingTask) return;
+
+    const finalizedTask = { ...editingTask };
+    
+    // Sync status if isAnchor is toggled
+    if (finalizedTask.isAnchor) {
+        finalizedTask.status = TaskStatus.ANCHOR;
+    } else if (finalizedTask.status === TaskStatus.ANCHOR) {
+        // If it was ANCHOR but now unchecked, change to PENDING
+        finalizedTask.status = TaskStatus.PENDING;
+    }
+
+    // If it's a temp task, give it a real ID and add it
+    if (finalizedTask.id.startsWith('temp')) {
+      finalizedTask.id = generateId();
+      // Calculate initial collisions for new task
+      const dayTasks = tasks.filter(t => t.dateStr === finalizedTask.dateStr);
+      const resolved = resolveCollisions(finalizedTask, dayTasks);
+      const otherTasks = tasks.filter(t => t.dateStr !== finalizedTask.dateStr);
+      onUpdateTasks([...otherTasks, ...resolved]);
+    } else {
+      // Update existing task
+      const dayTasks = tasks.filter(t => t.dateStr === finalizedTask.dateStr && t.id !== finalizedTask.id);
+      const resolved = resolveCollisions(finalizedTask, dayTasks);
+      const otherTasks = tasks.filter(t => t.dateStr !== finalizedTask.dateStr && t.id !== finalizedTask.id);
+      onUpdateTasks([...otherTasks, ...resolved]);
+    }
+
+    setIsModalOpen(false);
+    setEditingTask(null);
+  };
+
+  // 4. Delete Task
+  const handleDelete = () => {
+    if (!editingTask) return;
+    const remainingTasks = tasks.filter(t => t.id !== editingTask.id);
+    onUpdateTasks(remainingTasks);
+    setIsModalOpen(false);
+    setEditingTask(null);
+  };
+
+  const handleTaskToggle = (taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (task) {
+      if (!task.completed && task.isAnchor) {
+        fireAnchorCelebration();
+      }
+      onToggleTask(taskId);
+      if (window.navigator.vibrate) window.navigator.vibrate(10);
+    }
+  };
+
+  // --- Drag Logic (Unified) ---
+
+  const handleMouseDown = (e: React.MouseEvent, task: Task, type: 'move' | 'resize') => {
+    if (task.completed) return;
+    // e.stopPropagation(); // Allow bubbling to let parent trackers work if needed, but logic is handled here
+
+    let startMins = timeToMinutes(task.startTime);
+    let dateStr = task.dateStr;
+
+    // A. Dragging from Pool/Icebox (Not yet on Grid)
+    if (!task.startTime || !task.dateStr || task.isFrozen) {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        
+        // 1. Calculate Y position (Time) relative to scroll container
+        //    Adjust for scrollTop to find absolute position in scrollable area
+        const clickY = e.clientY - rect.top + containerRef.current.scrollTop;
+        startMins = pxToMinutes(clickY);
+        
+        // 2. Calculate X position (Date Column)
+        const clickX = e.clientX - rect.left;
+        const timelineContentX = clickX - 48; // Left label width
+        const columnWidth = (rect.width - 48) / 2;
+        
+        const targetDate = (timelineContentX > 0 && timelineContentX < columnWidth) ? leftDate : rightDate;
+        dateStr = format(targetDate, 'yyyy-MM-dd');
+
+        // 3. "Teleport" to grid immediately visually
+        const updatedTask = {
+          ...task,
+          startTime: minutesToTime(Math.max(0, startMins)),
+          dateStr: dateStr,
+          isFrozen: false,
+          status: TaskStatus.ANCHOR // Or retain category, but ensure it shows on grid
+        };
+        
+        // Update state immediately so it renders on grid and we can drag it
+        const dayTasks = tasks.filter(t => t.dateStr === updatedTask.dateStr && t.id !== task.id);
+        const resolved = resolveCollisions(updatedTask, dayTasks);
+        const others = tasks.filter(t => t.dateStr !== updatedTask.dateStr && t.id !== task.id);
+        
+        onUpdateTasks([...others, ...resolved]);
+      }
+    }
+
+    setDragState({
+      id: task.id,
+      type,
+      startY: e.clientY,
+      originalStart: startMins,
+      originalDuration: task.duration,
+      originalDateStr: dateStr
+    });
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragState) return;
+      if (!containerRef.current) return;
+
+      // Calculate Delta Minutes
+      // We use raw pixel difference divided by minute height
+      const deltaPx = e.clientY - dragState.startY;
+      const deltaMinutes = Math.round((deltaPx / MINUTE_HEIGHT) / SNAP_MINUTES) * SNAP_MINUTES;
+
+      // Calculate Grid Column (Date Switch)
+      const rect = containerRef.current.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const timelineContentX = clickX - 48;
+      const columnWidth = (rect.width - 48) / 2;
+      
+      let targetDateStr = dragState.originalDateStr;
+      if (timelineContentX > 0 && timelineContentX < columnWidth * 2) {
+         const targetDate = timelineContentX < columnWidth ? leftDate : rightDate;
+         targetDateStr = format(targetDate, 'yyyy-MM-dd');
+      }
+
+      let newStart = dragState.originalStart;
+      let newDuration = dragState.originalDuration;
+
+      if (dragState.type === 'move') {
+        newStart = Math.max(0, dragState.originalStart + deltaMinutes);
+      } else {
+        newDuration = Math.max(15, dragState.originalDuration + deltaMinutes);
+      }
+
+      const updatedActiveTask = {
+        ...tasks.find(t => t.id === dragState.id)!,
+        startTime: minutesToTime(newStart),
+        duration: newDuration,
+        dateStr: targetDateStr
+      };
+
+      // Real-time Fluid Collision Resolution
+      const dayTasks = tasks.filter(t => t.dateStr === updatedActiveTask.dateStr && t.id !== dragState.id);
+      const resolvedDayTasks = resolveCollisions(updatedActiveTask, dayTasks);
+      
+      const otherTasks = tasks.filter(t => t.dateStr !== updatedActiveTask.dateStr && t.id !== dragState.id);
+      onUpdateTasks([...otherTasks, ...resolvedDayTasks]);
+    };
+
+    const handleMouseUp = () => {
+      setDragState(null);
+    };
+
+    if (dragState) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragState, tasks, onUpdateTasks, leftDate, rightDate]);
+
+  return (
+    <div className="flex flex-col h-full bg-[#0f172a] overflow-hidden font-sans select-none">
+      
+      {/* --- TOP 60%: THE GRID --- */}
+      <div className="h-[60%] flex flex-col relative border-b border-slate-800">
+        
+        {/* Header */}
+        <div className="h-16 flex items-center justify-between px-6 bg-slate-900/80 backdrop-blur-xl z-20 border-b border-slate-800/50 relative">
+          <div>
+            <h2 className="text-lg font-bold text-white flex items-center gap-2 italic text-indigo-400">
+              ECHO
+            </h2>
+          </div>
+
+          {/* Date Navigation */}
+          <div className="absolute left-1/2 -translate-x-1/2 flex items-center bg-slate-800/50 rounded-full p-1 border border-slate-700 shadow-inner ml-4">
+             <button onClick={() => navigateDate('prev')} className="p-1 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white transition-all">
+                <ChevronLeft size={16} />
+             </button>
+             <span className="px-4 text-[10px] font-bold text-slate-400 tracking-widest uppercase">Schedule</span>
+             <button onClick={() => navigateDate('next')} className="p-1 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white transition-all">
+                <ChevronRight size={16} />
+             </button>
+          </div>
+
+          <button 
+            onClick={() => {
+               setEditingTask({
+                 id: `temp-${Date.now()}`,
+                 title: '', 
+                 category: TaskCategory.WORK, 
+                 status: TaskStatus.PENDING, 
+                 isAnchor: false, 
+                 isFrozen: false, 
+                 completed: false, 
+                 duration: 60, 
+                 startTime: '09:00', 
+                 dateStr: format(leftDate, 'yyyy-MM-dd')
+               });
+               setIsModalOpen(true);
+            }}
+            className="w-8 h-8 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center hover:bg-indigo-500 hover:text-white transition-all shadow-lg"
+          >
+            <Plus size={18} />
+          </button>
+        </div>
+
+        {/* Scrollable Timeline */}
+        <div className="flex-1 overflow-y-auto no-scrollbar relative flex" ref={containerRef}>
+          
+          {/* Time Labels */}
+          <div className="w-12 flex-shrink-0 bg-slate-900/30 border-r border-slate-800/30 pt-10 z-10 sticky left-0 pointer-events-none">
+            {Array.from({ length: 25 }).map((_, i) => (
+              <div key={i} className="h-[60px] text-[10px] text-slate-500 text-right pr-2 -mt-2.5">
+                {i}:00
+              </div>
+            ))}
+          </div>
+
+          {/* Day Columns Container */}
+          <div className="flex-1 flex relative min-h-[1480px]"> 
+             {/* Background Grid Lines */}
+             <div className="absolute inset-0 z-0 pointer-events-none pt-10">
+              {Array.from({ length: 24 }).map((_, i) => (
+                <div key={i} className="h-[60px] border-b border-slate-800/30 w-full" />
+              ))}
+            </div>
+
+            {/* Columns */}
+            {[leftDate, rightDate].map((date, colIdx) => {
+               const colDateStr = format(date, 'yyyy-MM-dd');
+               const colTasks = visibleTasks.filter(t => t.dateStr === colDateStr);
+               const isToday = isSameDay(date, new Date());
+               
+               return (
+                <div 
+                  key={colIdx} 
+                  className={`flex-1 relative border-r border-slate-800/50 cursor-crosshair ${colIdx === 1 ? 'bg-slate-900/20' : ''}`}
+                  onContextMenu={(e) => handleGridContextMenu(e, colDateStr)}
+                >
+                    {/* Sticky Day Header */}
+                    <div className="sticky top-0 h-10 z-10 bg-[#0f172a]/90 backdrop-blur-md border-b border-slate-800 flex flex-col items-center justify-center pointer-events-none">
+                       <span className={`text-[10px] font-bold uppercase ${isToday ? 'text-indigo-400' : 'text-slate-500'}`}>
+                         {isSameDay(date, new Date()) ? 'Today' : isSameDay(date, addDays(new Date(), 1)) ? 'Tomorrow' : format(date, 'EEEE')}
+                       </span>
+                       <span className="text-[10px] text-slate-600 font-mono">
+                         {format(date, 'yyyy-MM-dd')}
+                       </span>
+                    </div>
+
+                    {/* Tasks */}
+                    <div className="relative"> 
+                      {colTasks.map(task => (
+                        <FluidTaskCard 
+                          key={task.id} 
+                          task={task} 
+                          onToggle={() => handleTaskToggle(task.id)}
+                          onMouseDown={(e, type) => handleMouseDown(e, task, type)}
+                          onContextMenu={(e) => handleTaskContextMenu(e, task)}
+                          isDragging={dragState?.id === task.id}
+                        />
+                      ))}
+                    </div>
+                </div>
+               )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* --- BOTTOM 40%: DRAWERS --- */}
+      <div className="h-[40%] flex overflow-hidden">
+        
+        {/* Pool (Includes Drawer & Pending) */}
+        <div className="w-1/2 border-r border-slate-800 bg-[#0f172a] flex flex-col relative">
+          <div className="p-4 border-b border-slate-800/50 flex justify-between items-center bg-slate-900/50">
+            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Pool ({drawerTasks.length})</span>
+            <MapPin size={14} className="text-slate-600" />
+          </div>
+          
+          <div className="flex-1 overflow-y-auto p-3 space-y-3 no-scrollbar relative">
+            <AnimatePresence>
+              {drawerTasks.map((task) => (
+                <div
+                  key={task.id}
+                  className="cursor-grab active:cursor-grabbing"
+                  onMouseDown={(e) => handleMouseDown(e, task, 'move')}
+                >
+                  <motion.div
+                    layoutId={task.id}
+                    className="bg-slate-800/80 border border-slate-700/50 p-3 rounded-xl shadow-lg group relative overflow-hidden"
+                    whileHover={{ scale: 1.02 }}
+                  >
+                    <div className="flex items-center justify-between pointer-events-none">
+                      <span className="text-sm text-slate-200 font-medium">{task.title}</span>
+                      <GripHorizontal size={14} className="text-slate-600" />
+                    </div>
+                    <div className="flex gap-2 mt-2 pointer-events-none">
+                      <span className="text-[10px] px-1.5 py-0.5 bg-slate-700/50 rounded text-slate-400">{task.category}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-slate-700/50 rounded text-slate-400">{task.duration}m</span>
+                    </div>
+                  </motion.div>
+                </div>
+              ))}
+            </AnimatePresence>
+            {drawerTasks.length === 0 && (
+              <div className="text-center mt-10 text-slate-600 text-xs px-4">
+                Pool empty. All pending tasks assigned.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Icebox */}
+        <div className="w-1/2 relative bg-slate-900 overflow-hidden flex flex-col">
+          <div className="absolute inset-0 bg-cyan-900/10 z-0" />
+          <div className="absolute inset-0 backdrop-blur-[2px] z-0" />
+          <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
+
+          <div className="p-4 border-b border-cyan-900/30 flex justify-between items-center relative z-10 bg-cyan-950/30">
+            <span className="text-xs font-bold text-cyan-400/80 uppercase tracking-widest flex items-center gap-1">
+              <Snowflake size={12} /> Icebox ({iceboxTasks.length})
+            </span>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2 no-scrollbar relative z-10">
+            {iceboxTasks.map((task) => (
+              <div
+                key={task.id}
+                className="cursor-grab active:cursor-grabbing"
+                onMouseDown={(e) => handleMouseDown(e, task, 'move')}
+              >
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.6 }}
+                  className="bg-cyan-950/40 border border-cyan-800/30 p-3 rounded-xl flex items-center justify-between"
+                  whileHover={{ scale: 1.02 }}
+                >
+                  <span className="text-xs text-cyan-100 line-through decoration-cyan-500/50 pointer-events-none">{task.title}</span>
+                  <Snowflake size={12} className="text-cyan-600 pointer-events-none" />
+                </motion.div>
+              </div>
+            ))}
+            {iceboxTasks.length === 0 && <div className="text-center mt-10 text-cyan-800/50 text-xs">No frozen tasks.</div>}
+          </div>
+          
+          {iceboxTasks.length > 0 && (
+            <div className="p-3 border-t border-cyan-900/30 bg-cyan-950/50 relative z-10 flex gap-2">
+              <button 
+                onClick={() => handleOpenIceboxModal('shatter')}
+                className="flex-1 py-2 rounded-lg bg-red-500/10 text-red-400 text-xs font-bold flex items-center justify-center gap-1 hover:bg-red-500/20 transition-colors group relative"
+              >
+                <Trash2 size={12} /> Shatter
+                <div className="absolute bottom-full mb-2 hidden group-hover:block bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-50">
+                  Delete unfinished freezer items
+                </div>
+              </button>
+              <button 
+                onClick={() => handleOpenIceboxModal('melt')}
+                className="flex-1 py-2 rounded-lg bg-cyan-500/20 text-cyan-300 text-xs font-bold flex items-center justify-center gap-1 hover:bg-cyan-500/30 transition-colors group relative"
+              >
+                <RefreshCw size={12} /> Melt
+                <div className="absolute bottom-full mb-2 hidden group-hover:block bg-slate-800 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap z-50">
+                  Move unfinished tasks back to today's to-do list
+                </div>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* --- Modal --- */}
+      {isModalOpen && editingTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl"
+          >
+            {/* Header */}
+            <div className="p-6 border-b border-slate-800 flex justify-between items-center">
+              <h3 className="text-white font-bold flex items-center gap-2">
+                <Edit2 size={18} className="text-purple-400" /> 
+                {editingTask.id.startsWith('temp') ? 'New Task' : 'Edit Task'}
+              </h3>
+              <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+                <X size={20} className="text-slate-400" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {/* Title Input */}
+              <div className="space-y-2">
+                <label className="text-xs text-slate-500 uppercase font-semibold">Task Name</label>
+                <input 
+                  autoFocus
+                  value={editingTask.title}
+                  onChange={(e) => setEditingTask({...editingTask, title: e.target.value})}
+                  className="w-full bg-slate-800 border-none rounded-xl p-4 text-white focus:ring-2 focus:ring-purple-500 outline-none"
+                  placeholder="What needs to be done?"
+                />
+              </div>
+
+              {/* Time & Duration */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-slate-500 uppercase font-semibold">Start Time</label>
+                  <input 
+                    type="time"
+                    className="w-full bg-slate-800 border-none rounded-xl p-4 text-white focus:ring-2 focus:ring-purple-500 outline-none mt-2"
+                    value={editingTask.startTime || ''}
+                    onChange={(e) => setEditingTask({...editingTask, startTime: e.target.value})}
+                  />
+                </div>
+                <div>
+                   <label className="text-xs text-slate-500 uppercase font-semibold">Duration (m)</label>
+                   <input 
+                    type="number"
+                    step="15"
+                    className="w-full bg-slate-800 border-none rounded-xl p-4 text-white focus:ring-2 focus:ring-purple-500 outline-none mt-2"
+                    value={editingTask.duration}
+                    onChange={(e) => setEditingTask({...editingTask, duration: parseInt(e.target.value) || 0})}
+                  />
+                </div>
+              </div>
+
+              {/* Intent Selector */}
+              <div className="space-y-2">
+                <label className="text-xs text-slate-500 uppercase font-semibold flex items-center gap-2">
+                  <Tag size={14} /> Core Intent
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {INTENT_CONFIG.map((config) => (
+                    <button
+                      key={config.type}
+                      onClick={() => setEditingTask({...editingTask, intent: config.type})}
+                      className={`py-3 px-4 rounded-xl border text-sm transition-all flex items-center justify-center gap-2
+                        ${editingTask.intent === config.type ? config.color : 'bg-slate-800 border-transparent text-slate-400'}
+                      `}
+                    >
+                      {config.type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Note Section (AI-Synced Content) */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-xs text-slate-500 uppercase font-semibold flex items-center gap-2">
+                    <AlignLeft size={14} /> Notes & Workflow
+                  </label>
+                  {editingTask.workflowNote && (
+                    <span className="text-[10px] text-purple-500 flex items-center gap-1">
+                      <Sparkles size={10} /> AI Synced
+                    </span>
+                  )}
+                </div>
+                <textarea 
+                  value={editingTask.workflowNote || ''}
+                  onChange={(e) => setEditingTask({...editingTask, workflowNote: e.target.value})}
+                  rows={6}
+                  placeholder="Add specific steps or notes..."
+                  className="w-full bg-slate-800 border-none rounded-2xl p-4 text-slate-300 text-sm leading-relaxed focus:ring-2 focus:ring-purple-500 outline-none resize-none"
+                />
+              </div>
+
+              {/* Priority Decision */}
+              <div>
+                <button
+                  onClick={() => setEditingTask({ ...editingTask, isAnchor: !editingTask.isAnchor })}
+                  className={`w-full mt-2 flex items-center justify-center gap-2 py-3 rounded-xl border-2 transition-all duration-300
+                    ${editingTask.isAnchor 
+                      ? 'border-amber-400 bg-amber-500/10 text-amber-400 shadow-md scale-[1.02]' 
+                      : 'border-slate-800 bg-slate-800 text-slate-400 hover:border-slate-700'}
+                  `}
+                >
+                  <Star 
+                    size={18} 
+                    className={editingTask.isAnchor ? 'fill-amber-400 text-amber-400' : 'text-slate-300'} 
+                  />
+                  <span className="font-bold text-sm">
+                    {editingTask.isAnchor ? 'Marked as Core Anchor' : 'Mark as Core Anchor'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-6 bg-slate-800/50 flex gap-3">
+              {!editingTask.id.startsWith('temp') && (
+                 <button 
+                  onClick={handleDelete}
+                  className="flex items-center justify-center gap-2 px-4 py-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500/20 transition-colors mr-auto"
+                >
+                  <Trash2 size={18} />
+                </button>
+              )}
+              
+              <button onClick={() => setIsModalOpen(false)} className="flex-1 py-3 text-slate-400 font-medium hover:text-white transition-colors">Cancel</button>
+              <button 
+                onClick={saveTask}
+                className="flex-1 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold transition-all shadow-lg shadow-purple-900/20 flex items-center justify-center gap-2"
+              >
+                <Save size={18} /> Save Changes
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+            {/* --- Icebox Action Modal --- */}
+            {iceboxModalType && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl"
+          >
+            <div className="p-6 border-b border-slate-800 flex justify-between items-center">
+              <h3 className="text-white font-bold flex items-center gap-2">
+                {iceboxModalType === 'shatter' ? (
+                  <><Trash2 size={18} className="text-red-400" /> Shatter Tasks</>
+                ) : (
+                  <><RefreshCw size={18} className="text-cyan-400" /> Melt Tasks</>
+                )}
+              </h3>
+              <button onClick={handleCloseIceboxModal} className="p-2 hover:bg-slate-800 rounded-full transition-colors">
+                <X size={20} className="text-slate-400" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-300">
+                {iceboxModalType === 'shatter' 
+                  ? "Are you sure you want to delete all the selected unfinished items?" 
+                  : "You can select unfinished items and move them back into the task drawer"}
+              </p>
+
+              <div className="max-h-60 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                {iceboxTasks.map(task => (
+                  <label key={task.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 cursor-pointer hover:bg-slate-800 transition-colors">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedIceboxTasks.has(task.id)}
+                      onChange={() => handleToggleIceboxTaskSelection(task.id)}
+                      className="w-4 h-4 rounded border-slate-600 text-indigo-500 focus:ring-indigo-500 bg-slate-900"
+                    />
+                    <span className="text-sm text-slate-200">{task.title}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-6 bg-slate-800/50 flex gap-3">
+              {iceboxModalType === 'shatter' ? (
+                <>
+                  <button onClick={handleCloseIceboxModal} className="flex-1 py-3 text-slate-400 font-medium hover:text-white transition-colors">No</button>
+                  <button 
+                    onClick={handleConfirmIceboxAction}
+                    disabled={selectedIceboxTasks.size === 0}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold transition-all shadow-lg shadow-red-900/20"
+                  >
+                    Yes
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={handleCloseIceboxModal} className="flex-1 py-3 text-slate-400 font-medium hover:text-white transition-colors">Cancel</button>
+                  <button 
+                    onClick={handleConfirmIceboxAction}
+                    disabled={selectedIceboxTasks.size === 0}
+                    className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-bold transition-all shadow-lg shadow-cyan-900/20"
+                  >
+                    Move to the Task Pool
+                  </button>
+                </>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+
+    </div>
+  );
+};
+
+interface CardProps {
+  task: Task;
+  onToggle: () => void;
+  onMouseDown: (e: React.MouseEvent, type: 'move' | 'resize') => void;
+  onContextMenu: (e: React.MouseEvent) => void;
+  isDragging?: boolean;
+}
+
+const FluidTaskCard: React.FC<CardProps> = ({ task, onToggle, onMouseDown, onContextMenu, isDragging }) => {
+  const startMins = timeToMinutes(task.startTime);
+  const topPos = (startMins / 60) * HOUR_HEIGHT;
+  const height = (task.duration / 60) * HOUR_HEIGHT;
+
+  const getCategoryColor = (cat: TaskCategory) => {
+    switch(cat) {
+        case TaskCategory.WORK: return 'bg-blue-500';
+        case TaskCategory.STUDY: return 'bg-emerald-500';
+        case TaskCategory.GROWTH: return 'bg-purple-500';
+        case TaskCategory.LIFE: return 'bg-amber-500';
+        default: return 'bg-slate-500';
+    }
+  }
+  const colorClass = getCategoryColor(task.category);
+
+  return (
+    <div
+      onContextMenu={onContextMenu}
+      className={`
+        absolute left-2 right-2 rounded-xl p-2 flex flex-col justify-center
+        backdrop-blur-md border overflow-hidden
+        transition-all duration-300 ease-out group
+        ${isDragging ? 'z-50 opacity-90 scale-[1.02] shadow-2xl ring-2 ring-indigo-400' : 'z-20 shadow-sm'}
+        ${task.completed 
+           ? 'bg-slate-800/80 border-slate-700 grayscale-[0.8] opacity-60' 
+           : `${colorClass} bg-opacity-20 hover:bg-opacity-30 border-white/10 cursor-grab active:cursor-grabbing`
+        }
+      `}
+      style={{
+        top: topPos,
+        height: Math.max(height, 40),
+      }}
+      onMouseDown={(e) => onMouseDown(e, 'move')}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Anchor Star - Top Right */}
+      {task.isAnchor && (
+        <div className="absolute top-1 right-1 text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.6)] animate-pulse pointer-events-none">
+           <Star size={12} fill="currentColor" strokeWidth={0} />
+        </div>
+      )}
+
+      <div className="relative z-10 flex items-start gap-2 h-full pointer-events-none">
+         {/* Checkbox */}
+         <div
+            onClick={(e) => {
+              e.stopPropagation(); // Stop propagation to prevent drag
+              onToggle();
+            }}
+            className={`mt-0.5 flex-shrink-0 w-4 h-4 rounded border transition-all flex items-center justify-center z-50 cursor-pointer pointer-events-auto
+              ${task.completed 
+                ? 'bg-green-500 border-transparent' 
+                : 'bg-white/10 border-white/40 hover:bg-white/30'
+              }
+            `}
+          >
+            {task.completed && <Check size={10} className="text-white" />}
+          </div>
+
+         <div className="flex-1 min-w-0">
+            <span className={`text-xs font-bold block truncate ${task.completed ? 'line-through text-slate-400' : 'text-white'}`}>
+              {task.title || 'New Task'}
+            </span>
+            <div className={`flex items-center gap-2 mt-0.5 ${task.completed ? 'opacity-50' : 'opacity-80'}`}>
+              <span className="text-[9px] font-mono text-white/80">{task.startTime}</span>
+              <span className="text-[9px] px-1 rounded bg-black/20 text-white/80">{task.duration}m</span>
+              {task.decomposition_type && (
+                <span className={`text-[8px] px-1 rounded font-bold ${task.decomposition_type === 'LINEAR' ? 'bg-blue-500/30 text-blue-200' : 'bg-purple-500/30 text-purple-200'}`}>
+                  {task.decomposition_type.substring(0, 3)}
+                </span>
+              )}
+              {task.workflowNote && <FileText size={9} className="text-white/70" />}
+            </div>
+         </div>
+      </div>
+
+      {!task.completed && (
+        <div 
+          className="absolute bottom-0 left-0 right-0 h-3 cursor-s-resize hover:bg-white/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-auto"
+          onMouseDown={(e) => onMouseDown(e, 'resize')}
+        >
+          <GripHorizontal size={12} className="text-white/50" />
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default FluidTimeline;
