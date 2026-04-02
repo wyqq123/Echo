@@ -1,17 +1,19 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { prisma } from '../db.js';
+import { encodeFocusThemeId, decodeFocusThemeId } from '../lib/focusThemeIds.js';
 
 const router = Router();
 
 router.get('/', requireAuth, async (req, res) => {
   try {
+    const userId = req.userId;
     const rows = await prisma.focusTheme.findMany({
-      where: { userId: req.userId },
+      where: { userId },
       orderBy: { updatedAt: 'asc' },
     });
     const themes = rows.map((r) => ({
-      id: r.id,
+      id: decodeFocusThemeId(userId, r.id),
       intent: r.intent,
       tags: r.tags,
       isPrimary: r.isPrimary,
@@ -42,7 +44,7 @@ router.put('/', requireAuth, async (req, res) => {
       if (themes.length === 0) return;
       await tx.focusTheme.createMany({
         data: themes.map((t) => ({
-          id: t.id,
+          id: encodeFocusThemeId(userId, t.id),
           userId,
           intent: t.intent,
           tags: Array.isArray(t.tags) ? t.tags.map(String) : [],
@@ -53,7 +55,7 @@ router.put('/', requireAuth, async (req, res) => {
 
     res.json({ ok: true });
   } catch (e) {
-    console.error('put focus-themes error:', e);
+    console.error('put focus-themes error:', e.message || e);
     res.status(500).json({ error: 'Failed to save themes' });
   }
 });
