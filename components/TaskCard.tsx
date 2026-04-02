@@ -1,12 +1,13 @@
 import React from 'react';
 import { Task, TaskIntent, TaskCategory } from '../types';
 import IntentPillBar from './IntentPillBar';
-import { StickyNote, ChevronRight, Clock } from 'lucide-react';
+import { StickyNote, Clock, Split } from 'lucide-react';
 import Markdown from 'react-markdown';
 
 interface TaskCardProps {
   task: Task;
   onUpdate: (id: string, updates: Partial<Task>) => void;
+  onSplit?: (task: Task) => void;
 }
 
 const mapIntentToCategory = (intent: TaskIntent): TaskCategory => {
@@ -25,7 +26,7 @@ const mapIntentToCategory = (intent: TaskIntent): TaskCategory => {
   }
 };
 
-const TaskCard: React.FC<TaskCardProps> = ({ task, onUpdate }) => {
+const TaskCard: React.FC<TaskCardProps> = ({ task, onUpdate, onSplit }) => {
   const handleIntentSelect = (newIntent: TaskIntent) => {
     const newCategory = mapIntentToCategory(newIntent);
     onUpdate(task.id, { intent: newIntent, category: newCategory });
@@ -42,6 +43,16 @@ const TaskCard: React.FC<TaskCardProps> = ({ task, onUpdate }) => {
           placeholder="Task Title"
         />
         <div className="flex items-center gap-2 shrink-0">
+             {onSplit && (
+               <button
+                 type="button"
+                 onClick={() => onSplit(task)}
+                 className="text-[10px] uppercase font-bold px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors inline-flex items-center gap-1"
+               >
+                 <Split size={10} />
+                 Split
+               </button>
+             )}
              {task.decomposition_type && (
                <div className={`text-[10px] uppercase font-bold px-2 py-1 rounded-md ${task.decomposition_type === 'LINEAR' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'}`}>
                  {task.decomposition_type}

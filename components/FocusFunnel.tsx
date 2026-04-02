@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Loader2, Sparkles, ArrowRight, Zap, Edit2, 
-  Check, AlertCircle, TrendingUp, Clock, Snowflake, ChevronDown 
+  Check, AlertCircle, TrendingUp, Clock, Snowflake, ChevronDown, Plus, X
 } from 'lucide-react';
-import { parseBrainDump, generateFunnelScript, FunnelScript } from '../services/geminiService';
+import { parseBrainDump, generateFunnelScript, FunnelScript, generateMergedTaskDetails } from '../services/geminiService';
 import { logFunnelRun } from '../services/userDataApi';
-import { Task, TaskCategory, TaskStatus, FunnelStep, UserProfile } from '../types';
+import { Task, TaskCategory, TaskStatus, FunnelStep, UserProfile, TaskIntent } from '../types';
 import { format } from 'date-fns';
 import { useUserStore } from '../store/useUserStore';
 import TaskCard from './TaskCard';
@@ -45,6 +45,24 @@ const FocusFunnel: React.FC<Props> = ({ onTasksGenerated, existingTasks = [], us
   // Logic Tracking
   const [anchorsNeeded, setAnchorsNeeded] = useState<number>(0);
   const [showToast, setShowToast] = useState<{message: string, visible: boolean}>({ message: '', visible: false });
+  const [mergeSelectedIds, setMergeSelectedIds] = useState<string[]>([]);
+  const [mergeTitle, setMergeTitle] = useState('');
+  const [mergeIntent, setMergeIntent] = useState<Task['intent']>(undefined);
+  const [mergeCategory, setMergeCategory] = useState<TaskCategory>(TaskCategory.WORK);
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [splitSourceTask, setSplitSourceTask] = useState<Task | null>(null);
+  const [splitEditedSource, setSplitEditedSource] = useState<{ title: string; workflowNote: string }>({
+    title: '',
+    workflowNote: '',
+  });
+  const [splitNewTasks, setSplitNewTasks] = useState<Array<{
+    id: string;
+    title: string;
+    workflowNote: string;
+    intent?: TaskIntent;
+    category: TaskCategory;
+    duration: number;
+  }>>([]);
 
   // --- Handlers ---
 
@@ -112,6 +130,157 @@ const FocusFunnel: React.FC<Props> = ({ onTasksGenerated, existingTasks = [], us
     setGeneratedTasks(prev => prev.map(t => 
       t.id === id ? { ...t, ...updates } : t
     ));
+  };
+
+  const toggleMergePick = (id: string) => {
+    setMergeSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const handleMergeTasks = async () => {
+    if (mergeLoading) return;
+    if (mergeSelectedIds.length < 2 || !mergeTitle.trim() || !mergeIntent || !mergeCategory) {
+      setShowToast({ message: 'Select 2+ tasks, title, intent and category first.', visible: true });
+      setTimeout(() => setShowToast({ message: '', visible: false }), 3000);
+      return;
+    }
+
+    const picked = generatedTasks.filter(t => mergeSelectedIds.includes(t.id));
+    if (picked.length < 2) return;
+
+    setMergeLoading(true);
+    try {
+      const ai = await generateMergedTaskDetails(
+        mergeTitle.trim(),
+        picked,
+        focusThemes || [],
+        mergeIntent,
+        mergeCategory
+      );
+
+      const decompositionType = picked[0]?.decomposition_type;
+      const mergedTask: Task = {
+        id: generateId(),
+        title: mergeTitle.trim(),
+        intent: mergeIntent,
+        category: mergeCategory,
+        workflowNote: ai.workflowNote,
+        duration: ai.duration,
+        decomposition_type: decompositionType,
+        status: TaskStatus.CANDIDATE,
+        isAnchor: false,
+        isFrozen: false,
+        completed: false,
+      };
+
+      setGeneratedTasks(prev => [...prev.filter(t => !mergeSelectedIds.includes(t.id)), mergedTask]);
+      setMergeSelectedIds([]);
+      setMergeTitle('');
+      setShowToast({ message: 'Tasks merged successfully.', visible: true });
+      setTimeout(() => setShowToast({ message: '', visible: false }), 3000);
+    } catch (error) {
+      console.error('merge tasks failed', error);
+      setShowToast({ message: 'Failed to merge tasks.', visible: true });
+      setTimeout(() => setShowToast({ message: '', visible: false }), 3000);
+    } finally {
+      setMergeLoading(false);
+    }
+  };
+
+  const handleOpenSplit = (task: Task) => {
+    setSplitSourceTask(task);
+    setSplitEditedSource({
+      title: task.title,
+      workflowNote: task.workflowNote || '',
+    });
+    setSplitNewTasks([]);
+  };
+
+  const handleCloseSplit = () => {
+    setSplitSourceTask(null);
+    setSplitEditedSource({ title: '', workflowNote: '' });
+    setSplitNewTasks([]);
+  };
+
+  const addSplitTask = () => {
+    setSplitNewTasks((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        title: '',
+        workflowNote: '',
+        intent: undefined,
+        category: TaskCategory.WORK,
+        duration: 30,
+      },
+    ]);
+  };
+
+  const updateSplitTask = (
+    id: string,
+    patch: Partial<{
+      title: string;
+      workflowNote: string;
+      intent?: TaskIntent;
+      category: TaskCategory;
+      duration: number;
+    }>
+  ) => {
+    setSplitNewTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  };
+
+  const removeSplitTask = (id: string) => {
+    setSplitNewTasks((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const canConfirmSplit = () => {
+    if (!splitSourceTask) return false;
+    if (!splitEditedSource.title.trim()) return false;
+    return splitNewTasks.every(
+      (t) =>
+        t.title.trim().length > 0 &&
+        t.workflowNote.trim().length > 0 &&
+        !!t.intent &&
+        !!t.category &&
+        Number.isFinite(t.duration) &&
+        t.duration > 0
+    );
+  };
+
+  const handleConfirmSplit = () => {
+    if (!splitSourceTask || !canConfirmSplit()) {
+      setShowToast({ message: 'Please complete all required fields for split tasks.', visible: true });
+      setTimeout(() => setShowToast({ message: '', visible: false }), 3000);
+      return;
+    }
+
+    const updatedSource: Task = {
+      ...splitSourceTask,
+      title: splitEditedSource.title.trim(),
+      workflowNote: splitEditedSource.workflowNote.trim(),
+    };
+
+    const newTasks: Task[] = splitNewTasks.map((t) => ({
+      id: generateId(),
+      title: t.title.trim(),
+      workflowNote: t.workflowNote.trim(),
+      intent: t.intent,
+      category: t.category,
+      duration: t.duration,
+      status: TaskStatus.CANDIDATE,
+      isAnchor: false,
+      isFrozen: false,
+      completed: false,
+      decomposition_type: splitSourceTask.decomposition_type,
+    }));
+
+    setGeneratedTasks((prev) => {
+      const next = prev.filter((t) => t.id !== splitSourceTask.id);
+      return [...next, updatedSource, ...newTasks];
+    });
+
+    setShowToast({ message: 'Task split applied.', visible: true });
+    setTimeout(() => setShowToast({ message: '', visible: false }), 3000);
+    handleCloseSplit();
   };
 
   const handleProceed = () => {
@@ -661,11 +830,68 @@ const FocusFunnel: React.FC<Props> = ({ onTasksGenerated, existingTasks = [], us
           <span className="text-xs text-slate-500 flex items-center gap-1"><Edit2 size={12} /> Edit available</span>
         </div>
         <div className="flex-1 overflow-y-auto space-y-3 no-scrollbar pb-20">
-          {generatedTasks.map((task, idx) => (
+          <div className="mb-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-white">Merge Tasks</h3>
+              <span className="text-xs text-slate-400">Select 2+ tasks</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-3 max-h-36 overflow-y-auto no-scrollbar">
+              {generatedTasks.map((task) => {
+                const selected = mergeSelectedIds.includes(task.id);
+                return (
+                  <button
+                    key={`merge-${task.id}`}
+                    type="button"
+                    onClick={() => toggleMergePick(task.id)}
+                    className={`text-left text-xs px-3 py-2 rounded-lg border transition-colors ${selected ? 'border-purple-500 bg-purple-500/20 text-white' : 'border-slate-700 text-slate-300 hover:border-slate-500'}`}
+                  >
+                    {task.title}
+                  </button>
+                );
+              })}
+            </div>
+            <input
+              value={mergeTitle}
+              onChange={(e) => setMergeTitle(e.target.value)}
+              placeholder="Merged task title"
+              className="w-full mb-2 px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-purple-500"
+            />
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <select
+                value={mergeIntent || ''}
+                onChange={(e) => setMergeIntent((e.target.value || undefined) as Task['intent'])}
+                className="px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-purple-500"
+              >
+                <option value="">Select intent</option>
+                {Object.values(TaskIntent).map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+              <select
+                value={mergeCategory}
+                onChange={(e) => setMergeCategory(e.target.value as TaskCategory)}
+                className="px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-purple-500"
+              >
+                {Object.values(TaskCategory).map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              disabled={mergeLoading || mergeSelectedIds.length < 2 || !mergeTitle.trim() || !mergeIntent}
+              onClick={() => void handleMergeTasks()}
+              className="w-full py-2.5 rounded-lg bg-purple-600 text-white text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {mergeLoading ? 'Merging...' : 'Confirm Merge'}
+            </button>
+          </div>
+          {generatedTasks.map((task) => (
             <TaskCard 
               key={task.id} 
               task={task} 
               onUpdate={handleTaskUpdate} 
+              onSplit={handleOpenSplit}
             />
           ))}
         </div>
@@ -709,6 +935,149 @@ const FocusFunnel: React.FC<Props> = ({ onTasksGenerated, existingTasks = [], us
                     className="flex-1 py-3 rounded-xl bg-white text-black font-bold hover:bg-slate-200 transition-colors"
                   >
                     Yes
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {splitSourceTask && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
+              <motion.div
+                initial={{ scale: 0.96, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.96, opacity: 0 }}
+                className="w-full max-w-3xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-2xl border border-slate-700 bg-slate-900 p-5"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-white">Split Task</h3>
+                  <button
+                    type="button"
+                    onClick={handleCloseSplit}
+                    className="p-2 rounded-lg hover:bg-slate-800 text-slate-300"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="rounded-xl border border-slate-700 bg-slate-950/40 p-4 mb-4">
+                  <p className="text-xs uppercase tracking-wider text-slate-500 mb-2">Original Task</p>
+                  <input
+                    value={splitEditedSource.title}
+                    onChange={(e) =>
+                      setSplitEditedSource((prev) => ({ ...prev, title: e.target.value }))
+                    }
+                    placeholder="Task title"
+                    className="w-full mb-2 px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-purple-500"
+                  />
+                  <textarea
+                    value={splitEditedSource.workflowNote}
+                    onChange={(e) =>
+                      setSplitEditedSource((prev) => ({ ...prev, workflowNote: e.target.value }))
+                    }
+                    placeholder="Workflow note"
+                    className="w-full min-h-20 px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs uppercase tracking-wider text-slate-500">New Split Tasks</p>
+                  <button
+                    type="button"
+                    onClick={addSplitTask}
+                    className="px-3 py-1.5 rounded-lg bg-purple-600 text-white text-xs font-semibold inline-flex items-center gap-1"
+                  >
+                    <Plus size={14} />
+                    Add Task
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {splitNewTasks.length === 0 && (
+                    <div className="text-xs text-slate-500 border border-dashed border-slate-700 rounded-lg p-3">
+                      No extra task yet. Click “Add Task” to create one.
+                    </div>
+                  )}
+                  {splitNewTasks.map((t, idx) => (
+                    <div key={t.id} className="rounded-xl border border-slate-700 bg-slate-950/30 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-slate-400">Task #{idx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeSplitTask(t.id)}
+                          className="text-xs text-red-400 hover:text-red-300"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <input
+                        value={t.title}
+                        onChange={(e) => updateSplitTask(t.id, { title: e.target.value })}
+                        placeholder="Task title (required)"
+                        className="w-full mb-2 px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-purple-500"
+                      />
+                      <textarea
+                        value={t.workflowNote}
+                        onChange={(e) => updateSplitTask(t.id, { workflowNote: e.target.value })}
+                        placeholder="Workflow note (required)"
+                        className="w-full min-h-20 mb-2 px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-purple-500"
+                      />
+                      <div className="grid grid-cols-3 gap-2">
+                        <select
+                          value={t.intent || ''}
+                          onChange={(e) =>
+                            updateSplitTask(t.id, { intent: (e.target.value || undefined) as TaskIntent })
+                          }
+                          className="px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-purple-500"
+                        >
+                          <option value="">Intent (required)</option>
+                          {Object.values(TaskIntent).map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={t.category}
+                          onChange={(e) => updateSplitTask(t.id, { category: e.target.value as TaskCategory })}
+                          className="px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-purple-500"
+                        >
+                          {Object.values(TaskCategory).map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          value={t.duration}
+                          onChange={(e) => updateSplitTask(t.id, { duration: Math.max(1, parseInt(e.target.value || '1', 10)) })}
+                          className="px-3 py-2 rounded-lg bg-black/40 border border-slate-700 text-xs text-slate-100 focus:outline-none focus:border-purple-500"
+                          min={1}
+                          placeholder="Duration (m)"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-2 mt-5">
+                  <button
+                    type="button"
+                    onClick={handleCloseSplit}
+                    className="flex-1 py-2.5 rounded-lg bg-slate-800 text-slate-200 text-sm font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmSplit}
+                    disabled={!canConfirmSplit()}
+                    className="flex-1 py-2.5 rounded-lg bg-white text-black text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Confirm Split
                   </button>
                 </div>
               </motion.div>

@@ -748,6 +748,61 @@ export const generateFocusTags = async (intent: TaskIntent, recentTasks: Task[])
   }
 };
 
+export const generateMergedTaskDetails = async (
+  title: string,
+  mergedFrom: Task[],
+  focusThemes: FocusTheme[],
+  intent?: TaskIntent,
+  category?: TaskCategory
+): Promise<{ workflowNote: string; duration: number }> => {
+  try {
+    const prompt = `
+You are an expert task-planning assistant.
+The user merged multiple tasks into one new task.
+
+Requirements:
+- Keep output concise and actionable.
+- Return JSON only with shape: {"workflowNote": string, "duration": number}
+- "duration" must be minutes (integer, 15 to 480).
+- "workflowNote" should be a short step list the user can execute.
+
+Merged title: "${title}"
+Chosen intent: "${intent ?? 'N/A'}"
+Chosen category: "${category ?? 'N/A'}"
+Source tasks JSON: ${JSON.stringify(mergedFrom)}
+Focus themes context (do NOT modify, context only): ${JSON.stringify(focusThemes)}
+`;
+
+    const response = await generateViaProxyOrDirect({
+      model: QWEN_CHAT_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+      },
+    });
+
+    const parsed = JSON.parse((response.text || "{}").trim());
+    const durationRaw = Number(parsed.duration);
+    const duration = Number.isFinite(durationRaw)
+      ? Math.max(15, Math.min(480, Math.round(durationRaw)))
+      : Math.max(15, Math.min(480, Math.round(mergedFrom.reduce((s, t) => s + (t.duration || 0), 0) || 60)));
+
+    return {
+      workflowNote: typeof parsed.workflowNote === "string" && parsed.workflowNote.trim()
+        ? parsed.workflowNote.trim()
+        : "1. Define the merged deliverable\n2. Execute highest-impact sub-step\n3. Review and close",
+      duration,
+    };
+  } catch (error) {
+    console.error("Merged task generation failed:", error);
+    const fallbackDuration = Math.max(15, Math.min(480, Math.round(mergedFrom.reduce((s, t) => s + (t.duration || 0), 0) || 60)));
+    return {
+      workflowNote: "1. Clarify scope for this merged task\n2. Execute key sub-steps in order\n3. Wrap up with a quick review",
+      duration: fallbackDuration,
+    };
+  }
+};
+
 const mockParse = (text: string): Partial<Task>[] => {
   const parts = text.split(/,|\n/).filter(s => s.trim().length > 0);
   return parts.map((part, index) => ({
