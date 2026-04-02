@@ -8,14 +8,19 @@ datasource db {
 }
 
 model User {
-  id            String         @id @default(cuid())
-  email         String         @unique
-  passwordHash  String         @map("password_hash")
-  createdAt     DateTime       @default(now()) @map("created_at")
-  refreshTokens RefreshToken[]
-  focusThemes   FocusTheme[]
-  tasks         Task[]
-  funnelRuns    FunnelRun[]
+  id                      String         @id @default(cuid())
+  email                   String         @unique
+  passwordHash            String         @map("password_hash")
+  createdAt               DateTime       @default(now()) @map("created_at")
+  displayName             String?        @map("display_name")
+  avatarUrl               String?        @map("avatar_url") @db.Text
+  roleIds                 String[]       @default([]) @map("role_ids")
+  fieldDomain             String?        @map("field_domain")
+  onboardingCompletedAt   DateTime?      @map("onboarding_completed_at")
+  refreshTokens           RefreshToken[]
+  focusThemes             FocusTheme[]
+  tasks                   Task[]
+  funnelRuns              FunnelRun[]
 }
 
 model RefreshToken {

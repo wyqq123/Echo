@@ -95,7 +95,9 @@ export interface UserProfile {
   name: string;
   avatar?: string;
   quarterlyThemes: FocusTheme[];
+  /** @deprecated Prefer roleIds; kept for prompts / backward compatibility */
   identity?: string | null;
+  roleIds?: string[];
   domain?: string;
 }
 
@@ -127,4 +129,5 @@ export type Action =
   | { type: 'ADD_LEAF'; payload: LeafNode }
   | { type: 'GROW_LEAF'; payload: { id: string; taskId: string; completedAt: string } }
   | { type: 'ADD_SYNERGY_LINK'; payload: SynergyLink }
-  | { type: 'COMPLETE_ONBOARDING'; payload: UserProfile };
+  | { type: 'COMPLETE_ONBOARDING'; payload: UserProfile }
+  | { type: 'RESET_ONBOARDING' };

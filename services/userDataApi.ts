@@ -2,6 +2,18 @@ import type { Task, FocusTheme } from '../types';
 import type { FunnelScript } from './geminiService';
 import { useAuthStore } from '../store/useAuthStore';
 
+/** Full user row from GET /api/me (dates serialized as ISO strings). */
+export type MeUser = {
+  id: string;
+  email: string;
+  createdAt: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  roleIds: string[];
+  fieldDomain: string | null;
+  onboardingCompletedAt: string | null;
+};
+
 async function parseError(res: Response): Promise<string> {
   try {
     const j = (await res.json()) as { error?: string };
@@ -43,6 +55,29 @@ export async function saveTasks(tasks: Task[]): Promise<void> {
     body: JSON.stringify({ tasks }),
   });
   if (!res.ok) throw new Error(await parseError(res));
+}
+
+export async function fetchMeProfile(): Promise<MeUser> {
+  const res = await authFetch('/api/me');
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json() as Promise<MeUser>;
+}
+
+export async function completeOnboarding(payload: {
+  displayName: string;
+  fieldDomain: string;
+  roleIds: string[];
+  skippedQuarterlyThemes: boolean;
+  themes?: FocusTheme[];
+  avatarUrl?: string | null;
+}): Promise<MeUser> {
+  const res = await authFetch('/api/me/onboarding-complete', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  const data = (await res.json()) as { ok?: boolean; user: MeUser };
+  return data.user;
 }
 
 export async function fetchFocusThemes(): Promise<FocusTheme[]> {

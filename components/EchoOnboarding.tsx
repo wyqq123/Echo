@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { parseBrainDump, generateFunnelScript, FunnelScript, generateDomainsForRole } from '../services/geminiService';
-import { Loader2, ChevronRight, Sparkles, User, ArrowRight, Check } from 'lucide-react';
+import { generateDomainsForRole } from '../services/geminiService';
+import { Loader2, Sparkles, User, ArrowRight, Check } from 'lucide-react';
 import { UserProfile, FocusTheme, TaskIntent } from '../types';
 import { useUserStore } from '../store/useUserStore';
 
@@ -17,7 +17,7 @@ const DOMAINS = [
   { id: 'spirit', icon: '🎨', title: 'Inner Wild', desc: 'Hobbies, Travel, Creativity', options: ['Explore Unknown Places', 'Cultivate New Hobby', 'Creative Expression'] },
 ];
 
-type Step = 'profile' | 'identity' | 'domain' | 'prompt' | 'skip_modal' | 'select_domains' | 'refine_domains' | 'preview' | 'completed';
+type Step = 'profile' | 'identity' | 'domain' | 'prompt' | 'skip_modal' | 'select_domains' | 'refine_domains' | 'preview';
 
 const ROLES = [
   { id: 'Student', label: 'Deep learner', icon: '🎓', sub: ['Undergraduate', 'Graduate student', 'Postgraduate exam taker', 'Job seeker', 'Lifelong learner'] },
@@ -26,118 +26,205 @@ const ROLES = [
   { id: 'Mixed', label: 'Fuzzy state', icon: '🌫️', sub: ['In exploration', 'Slash youth', 'Transition period'] }
 ];
 
+const AVATAR_MAX_BYTES = 900_000;
+
 interface EchoOnboardingProps {
-  onComplete: (profile: UserProfile) => void;
+  onComplete: (profile: UserProfile, options: { skippedQuarterlyThemes: boolean }) => Promise<void>;
 }
 
 export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
   const [step, setStep] = useState<Step>('profile');
-  
-  // State Collection
+
   const [name, setName] = useState('');
-  const [identity, setIdentity] = useState<string | null>(null);
-  const [domain, setDomain] = useState<string>('');
+  const [avatarDataUrl, setAvatarDataUrl] = useState<string | undefined>(undefined);
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
+  const [domain, setDomain] = useState('');
+  const [domainInput, setDomainInput] = useState('');
   const [dynamicDomains, setDynamicDomains] = useState<string[]>([]);
   const [isGeneratingDomains, setIsGeneratingDomains] = useState(false);
   const [selectedDomainIds, setSelectedDomainIds] = useState<string[]>([]);
-  const [refinedFocus, setRefinedFocus] = useState<Record<string, string>>({});
+  const [refineIndex, setRefineIndex] = useState(0);
+  const [refinedOptions, setRefinedOptions] = useState<Record<string, string[]>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [identityBusy, setIdentityBusy] = useState(false);
 
-  // --- Interaction Handlers ---
-  const handleSelectIdentity = async (id: string, label: string) => {
-    setIdentity(id);
-    setStep('domain');
-    setIsGeneratingDomains(true);
-    
-    // Set fallback immediately
-    const role = ROLES.find(r => r.id === id);
-    if (role) {
-      setDynamicDomains(role.sub);
+  useEffect(() => {
+    if (step === 'refine_domains') {
+      setRefineIndex(0);
     }
+  }, [step]);
 
-    // Generate dynamic domains
-    const generated = await generateDomainsForRole(label);
-    if (generated && generated.length > 0) {
-      setDynamicDomains(generated);
-    }
-    setIsGeneratingDomains(false);
+  const toggleRole = (id: string) => {
+    setSelectedRoleIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const handleSelectDomain = (domainStr: string) => {
-    setDomain(domainStr);
+  const handleProfileConfirm = () => {
+    setSubmitError(null);
+    setStep('identity');
+  };
+
+  const handleAvatarFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f || !f.type.startsWith('image/')) return;
+    if (f.size > AVATAR_MAX_BYTES) {
+      setSubmitError('Image is too large (max ~900KB).');
+      return;
+    }
+    setSubmitError(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = reader.result as string;
+      setAvatarDataUrl(url);
+    };
+    reader.readAsDataURL(f);
+  };
+
+  const handleIdentityConfirm = async () => {
+    if (selectedRoleIds.length === 0 || identityBusy) return;
+    setIdentityBusy(true);
+    setSubmitError(null);
+    setStep('domain');
+    setIsGeneratingDomains(true);
+
+    try {
+      const unionSubs = [
+        ...new Set(
+          selectedRoleIds.flatMap((rid) => ROLES.find((r) => r.id === rid)?.sub ?? [])
+        ),
+      ];
+      setDynamicDomains(unionSubs);
+
+      const firstRole = ROLES.find((r) => r.id === selectedRoleIds[0]);
+      const generated = await generateDomainsForRole(firstRole?.label ?? '');
+      if (generated && generated.length > 0) {
+        setDynamicDomains([...new Set([...generated, ...unionSubs])]);
+      }
+    } finally {
+      setIsGeneratingDomains(false);
+      setIdentityBusy(false);
+    }
+  };
+
+  const handleDomainConfirm = () => {
+    const manual = domainInput.trim();
+    const chosen = manual || domain.trim();
+    if (!chosen) return;
+    setDomain(chosen);
+    setSubmitError(null);
     setStep('prompt');
   };
 
   const toggleDomain = (id: string) => {
-    setSelectedDomainIds(prev => {
-      if (prev.includes(id)) return prev.filter(d => d !== id);
-      if (prev.length >= 3) return prev; // Limit to 3
+    setSelectedDomainIds((prev) => {
+      if (prev.includes(id)) return prev.filter((d) => d !== id);
+      if (prev.length >= 3) return prev;
       return [...prev, id];
     });
   };
 
-  const selectFocus = (domainId: string, focusOption: string) => {
-    setRefinedFocus(prev => ({ ...prev, [domainId]: focusOption }));
+  const toggleRefineOption = (domainId: string, opt: string) => {
+    setRefinedOptions((prev) => {
+      const cur = prev[domainId] ?? [];
+      const next = cur.includes(opt) ? cur.filter((x) => x !== opt) : [...cur, opt];
+      return { ...prev, [domainId]: next };
+    });
   };
 
-  const setFocusThemes = useUserStore(state => state.setFocusThemes);
+  const setFocusThemes = useUserStore((state) => state.setFocusThemes);
 
-  const handleComplete = () => {
-    const themes: FocusTheme[] = selectedDomainIds.map(id => {
-      const d = DOMAINS.find(x => x.id === id)!;
+  const buildProfile = (themes: FocusTheme[]): UserProfile => ({
+    name,
+    ...(avatarDataUrl !== undefined ? { avatar: avatarDataUrl } : {}),
+    quarterlyThemes: themes,
+    identity: selectedRoleIds[0] ?? null,
+    roleIds: selectedRoleIds,
+    domain,
+  });
+
+  const handleComplete = async () => {
+    const themes: FocusTheme[] = selectedDomainIds.map((id) => {
+      const d = DOMAINS.find((x) => x.id === id)!;
+      const tags = refinedOptions[id]?.length ? refinedOptions[id]! : [d.options[0]];
       return {
         id: d.id,
         intent: d.title as TaskIntent,
-        tags: [refinedFocus[id] || d.options[0]],
-        isPrimary: true
+        tags,
+        isPrimary: true,
       };
     });
 
-    // Write to Global Store
     setFocusThemes(themes);
-
-    const profile: UserProfile = {
-      name,
-      quarterlyThemes: themes,
-      identity,
-      domain
-    };
-    
-    onComplete(profile);
+    const profile = buildProfile(themes);
+    setSubmitError(null);
+    setSaving(true);
+    try {
+      await onComplete(profile, { skippedQuarterlyThemes: false });
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Could not save onboarding');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  // Skip logic: create empty profile or default
-  const handleSkip = () => {
-    // Clear themes in Global Store
+  const handleSkip = async () => {
     setFocusThemes([]);
-
     const profile: UserProfile = {
-      name: name || 'Traveler',
+      name: name.trim() || 'Traveler',
+      ...(avatarDataUrl !== undefined ? { avatar: avatarDataUrl } : {}),
       quarterlyThemes: [],
-      identity,
-      domain
+      identity: selectedRoleIds[0] ?? null,
+      roleIds: selectedRoleIds,
+      domain,
     };
-    onComplete(profile);
+    setSubmitError(null);
+    setSaving(true);
+    try {
+      await onComplete(profile, { skippedQuarterlyThemes: true });
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Could not save onboarding');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  // Animation Variants
+  const currentRefineId = selectedDomainIds[refineIndex];
+  const currentRefineDomain = currentRefineId ? DOMAINS.find((d) => d.id === currentRefineId) : undefined;
+  const canRefineConfirm =
+    currentRefineId && (refinedOptions[currentRefineId]?.length ?? 0) > 0;
+
+  const handleRefineConfirm = () => {
+    if (!canRefineConfirm || !currentRefineId) return;
+    if (refineIndex >= selectedDomainIds.length - 1) {
+      setStep('preview');
+    } else {
+      setRefineIndex((i) => i + 1);
+    }
+  };
+
   const pageVariants = {
     initial: { opacity: 0, y: 20 },
     animate: { opacity: 1, y: 0 },
     exit: { opacity: 0, y: -20 }
   };
 
+  const domainChipSelected = (label: string) => domain === label;
+
   return (
     <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-6 font-sans text-slate-50 relative overflow-hidden">
-      {/* Background Ambient Light */}
       <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] bg-indigo-900/20 rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-purple-900/20 rounded-full blur-[120px] pointer-events-none" />
 
       <div className="w-full max-w-md z-10">
+        {submitError && (
+          <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+            {submitError}
+          </div>
+        )}
         <AnimatePresence mode="wait">
-          
-          {/* Step 1: Profile Setup */}
+
           {step === 'profile' && (
-            <motion.div 
+            <motion.div
               key="profile"
               variants={pageVariants}
               initial="initial"
@@ -145,34 +232,43 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               exit="exit"
               className="flex flex-col items-center text-center"
             >
-              <div className="w-24 h-24 bg-slate-800 rounded-full flex items-center justify-center mb-8 shadow-xl border border-slate-700">
-                <User size={40} className="text-slate-400" />
-              </div>
+              <label className="relative mb-8 cursor-pointer group">
+                <input type="file" accept="image/*" className="sr-only" onChange={handleAvatarFile} />
+                <div className="w-24 h-24 rounded-full flex items-center justify-center shadow-xl border border-slate-700 overflow-hidden bg-slate-800 group-hover:border-indigo-500/50 transition-colors">
+                  {avatarDataUrl ? (
+                    <img src={avatarDataUrl} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <User size={40} className="text-slate-400" />
+                  )}
+                </div>
+                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 text-[10px] text-slate-500 whitespace-nowrap">
+                  Tap to upload avatar
+                </span>
+              </label>
               <h1 className="text-3xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
                 Welcome to Echo
               </h1>
               <p className="text-slate-400 mb-8">How should we call you?</p>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 placeholder="Your Nickname"
                 className="w-full px-6 py-4 bg-slate-900 border border-slate-800 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-center text-xl font-medium placeholder:text-slate-600 transition-all"
                 value={name}
-                onChange={e => setName(e.target.value)}
+                onChange={(e) => setName(e.target.value)}
                 autoFocus
               />
-              <button 
+              <button
                 disabled={!name.trim()}
-                onClick={() => setStep('identity')}
+                onClick={handleProfileConfirm}
                 className="mt-12 w-full py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold text-lg disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-indigo-500/10"
               >
-                Next
+                Confirm
               </button>
             </motion.div>
           )}
 
-          {/* Step 1.5: Identity Selection */}
           {step === 'identity' && (
-            <motion.div 
+            <motion.div
               key="identity"
               variants={pageVariants}
               initial="initial"
@@ -180,28 +276,54 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               exit="exit"
               className="flex flex-col items-center text-center w-full max-w-2xl mx-auto"
             >
-              <h2 className="text-2xl font-light mb-8 text-slate-300">FocusFunnel 需要了解你的“重力场”。你是？</h2>
+              <h2 className="text-2xl font-light mb-8 text-slate-300">FocusFunnel 需要了解你对自己的身份定位。你是？（可多选）</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-                {ROLES.map((role) => (
-                  <button
-                    key={role.id}
-                    onClick={() => handleSelectIdentity(role.id, role.label)}
-                    className="p-6 rounded-3xl border border-white/10 bg-slate-900/50 hover:bg-slate-800 transition-all group text-left flex items-center gap-4"
-                  >
-                    <span className="text-4xl">{role.icon}</span>
-                    <div>
-                      <h3 className="text-lg font-medium text-slate-100">{role.label}</h3>
-                      <p className="text-xs text-slate-500 mt-1">{role.sub.slice(0, 3).join(', ')}...</p>
-                    </div>
-                  </button>
-                ))}
+                {ROLES.map((role) => {
+                  const selected = selectedRoleIds.includes(role.id);
+                  return (
+                    <button
+                      key={role.id}
+                      type="button"
+                      onClick={() => toggleRole(role.id)}
+                      className={`p-6 rounded-3xl border transition-all group text-left flex items-center gap-4 relative
+                        ${selected
+                          ? 'border-indigo-500 bg-indigo-500/15 shadow-[0_0_20px_rgba(99,102,241,0.12)]'
+                          : 'border-white/10 bg-slate-900/50 hover:bg-slate-800'}
+                      `}
+                    >
+                      {selected && (
+                        <div className="absolute top-3 right-3 w-6 h-6 bg-indigo-500 rounded-full flex items-center justify-center">
+                          <Check size={14} className="text-white" />
+                        </div>
+                      )}
+                      <span className="text-4xl">{role.icon}</span>
+                      <div>
+                        <h3 className="text-lg font-medium text-slate-100">{role.label}</h3>
+                        <p className="text-xs text-slate-500 mt-1">{role.sub.slice(0, 3).join(', ')}...</p>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
+              <button
+                disabled={selectedRoleIds.length === 0 || identityBusy}
+                onClick={() => void handleIdentityConfirm()}
+                className="mt-10 w-full max-w-md py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold text-lg disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white transition-all"
+              >
+                {identityBusy ? (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Loader2 className="animate-spin" size={20} />
+                    Preparing…
+                  </span>
+                ) : (
+                  'Confirm'
+                )}
+              </button>
             </motion.div>
           )}
 
-          {/* Step 1.6: Domain Selection */}
           {step === 'domain' && (
-            <motion.div 
+            <motion.div
               key="domain"
               variants={pageVariants}
               initial="initial"
@@ -209,7 +331,7 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               exit="exit"
               className="flex flex-col items-center text-center w-full max-w-xl mx-auto"
             >
-              <h2 className="text-2xl font-light mb-6 text-slate-300">告诉 FocusFunnel 你的具体坐标</h2>
+              <h2 className="text-2xl font-light mb-6 text-slate-300">告诉 FocusFunnel 你所从事的领域</h2>
               <div className="flex flex-wrap gap-3 justify-center min-h-[120px] items-center">
                 {isGeneratingDomains && dynamicDomains.length === 0 ? (
                   <div className="flex items-center gap-2 text-indigo-400">
@@ -220,29 +342,40 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
                   dynamicDomains.map((s) => (
                     <button
                       key={s}
-                      onClick={() => handleSelectDomain(s)}
-                      className="px-6 py-3 rounded-full border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 transition-all"
+                      type="button"
+                      onClick={() => {
+                        setDomain(s);
+                        setDomainInput('');
+                      }}
+                      className={`px-6 py-3 rounded-full border transition-all
+                        ${domainChipSelected(s)
+                          ? 'border-indigo-500 bg-indigo-500/20 text-indigo-200'
+                          : 'border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300'}
+                      `}
                     >
                       {s}
                     </button>
                   ))
                 )}
-                <input 
-                  placeholder="或者手动输入你的职位/领域..."
-                  className="w-full mt-6 bg-transparent border-b border-slate-700 p-3 text-center outline-none focus:border-indigo-500 text-slate-200"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-                      handleSelectDomain(e.currentTarget.value.trim());
-                    }
-                  }}
-                />
               </div>
+              <input
+                placeholder="或者手动输入你的职位/领域..."
+                className="w-full mt-6 bg-transparent border-b border-slate-700 p-3 text-center outline-none focus:border-indigo-500 text-slate-200"
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+              />
+              <button
+                disabled={!domainInput.trim() && !domain.trim()}
+                onClick={handleDomainConfirm}
+                className="mt-10 w-full py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white transition-all"
+              >
+                Confirm
+              </button>
             </motion.div>
           )}
 
-          {/* Step 2: Intent Prompt */}
           {step === 'prompt' && (
-            <motion.div 
+            <motion.div
               key="prompt"
               variants={pageVariants}
               initial="initial"
@@ -255,28 +388,28 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               </div>
               <h2 className="text-2xl font-bold mb-4">Set Your Course</h2>
               <p className="text-slate-400 mb-10 leading-relaxed max-w-xs">
-                We'd like to help you define <span className="text-indigo-400 font-semibold">3 Quarterly Focus Themes</span>. These will serve as your compass for daily decision making.
+                We&apos;d like to help you define <span className="text-indigo-400 font-semibold">up to 3 Quarterly Focus Themes</span>. These will serve as your compass for daily decision making.
               </p>
               <div className="space-y-4 w-full">
-                <button 
-                  onClick={() => setStep('select_domains')} 
+                <button
+                  onClick={() => setStep('select_domains')}
                   className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold text-lg hover:bg-indigo-500 hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-indigo-600/20"
                 >
-                  Focus Now
+                  Yes, set themes now
                 </button>
-                <button 
-                  onClick={() => setStep('skip_modal')} 
+                <button
+                  onClick={() => setStep('skip_modal')}
                   className="w-full py-4 bg-transparent text-slate-500 rounded-2xl font-medium hover:text-slate-300 transition-colors"
+                  type="button"
                 >
-                  Maybe Later
+                  No, maybe later
                 </button>
               </div>
             </motion.div>
           )}
 
-          {/* Step 2.1: Skip Confirmation */}
           {step === 'skip_modal' && (
-            <motion.div 
+            <motion.div
               key="skip_modal"
               variants={pageVariants}
               initial="initial"
@@ -284,30 +417,34 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               exit="exit"
               className="flex flex-col items-center text-center bg-slate-900/50 p-8 rounded-3xl border border-slate-800 backdrop-blur-xl"
             >
-              <h2 className="text-2xl font-bold mb-4">Explore First?</h2>
+              <h2 className="text-2xl font-bold mb-4">Skip quarterly themes?</h2>
               <p className="text-slate-400 mb-8 leading-relaxed">
-                No worries. Great decisions often come from action. You can explore Echo first.
-                <br/><br/>
-                When you're ready, define your themes in <span className="text-indigo-400">Echo Compass</span> to unlock the full potential of your daily Anchor.
+                You can set your focus theme for the quarter anytime in Echo Compass.
               </p>
-              <button 
-                onClick={handleSkip} 
-                className="w-full py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold flex justify-center items-center gap-2 hover:bg-white hover:scale-[1.02] transition-all"
+              <button
+                disabled={saving}
+                onClick={() => void handleSkip()}
+                className="w-full py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold flex justify-center items-center gap-2 hover:bg-white hover:scale-[1.02] transition-all disabled:opacity-50"
+                type="button"
               >
-                Start Exploring <ArrowRight size={18} />
+                {saving ? <Loader2 className="animate-spin" size={20} /> : (
+                  <>
+                    Confirm <ArrowRight size={18} />
+                  </>
+                )}
               </button>
-              <button 
-                onClick={() => setStep('prompt')} 
+              <button
+                onClick={() => setStep('prompt')}
                 className="mt-6 text-sm text-slate-500 hover:text-slate-300 underline underline-offset-4"
+                type="button"
               >
                 Go Back
               </button>
             </motion.div>
           )}
 
-          {/* Step 3: Domain Selection */}
           {step === 'select_domains' && (
-            <motion.div 
+            <motion.div
               key="select_domains"
               variants={pageVariants}
               initial="initial"
@@ -318,23 +455,23 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               <div className="mb-6 text-center">
                 <h2 className="text-xl font-bold">What to change in 90 days?</h2>
                 <p className="text-sm text-slate-500 mt-2 font-medium">
-                  Select 3 areas ({selectedDomainIds.length}/3)
+                  Select 1–3 areas ({selectedDomainIds.length}/3)
                 </p>
               </div>
-              
+
               <div className="grid grid-cols-2 gap-3 mb-6">
-                {DOMAINS.map(domain => {
-                  const isSelected = selectedDomainIds.includes(domain.id);
+                {DOMAINS.map((d) => {
+                  const isSelected = selectedDomainIds.includes(d.id);
                   const isMaxedOut = selectedDomainIds.length >= 3 && !isSelected;
-                  
+
                   return (
-                    <motion.div 
-                      key={domain.id}
+                    <motion.div
+                      key={d.id}
                       whileTap={{ scale: isMaxedOut ? 1 : 0.95 }}
-                      onClick={() => !isMaxedOut && toggleDomain(domain.id)}
+                      onClick={() => !isMaxedOut && toggleDomain(d.id)}
                       className={`p-4 rounded-2xl border cursor-pointer transition-all duration-200 flex flex-col items-start relative overflow-hidden
-                        ${isSelected 
-                          ? 'border-indigo-500 bg-indigo-500/10 shadow-[0_0_20px_rgba(99,102,241,0.15)]' 
+                        ${isSelected
+                          ? 'border-indigo-500 bg-indigo-500/10 shadow-[0_0_20px_rgba(99,102,241,0.15)]'
                           : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'}
                         ${isMaxedOut ? 'opacity-30 grayscale cursor-not-allowed' : ''}
                       `}
@@ -344,30 +481,29 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
                           <Check size={12} className="text-white" />
                         </div>
                       )}
-                      <span className="text-3xl mb-3 block">{domain.icon}</span>
+                      <span className="text-3xl mb-3 block">{d.icon}</span>
                       <h3 className={`font-bold text-sm ${isSelected ? 'text-indigo-300' : 'text-slate-200'}`}>
-                        {domain.title}
+                        {d.title}
                       </h3>
-                      <p className="text-[10px] text-slate-500 mt-1 leading-tight">{domain.desc}</p>
+                      <p className="text-[10px] text-slate-500 mt-1 leading-tight">{d.desc}</p>
                     </motion.div>
                   );
                 })}
               </div>
 
-              <button 
-                disabled={selectedDomainIds.length !== 3}
+              <button
+                disabled={selectedDomainIds.length < 1 || selectedDomainIds.length > 3}
                 onClick={() => setStep('refine_domains')}
                 className="mt-auto w-full py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-all hover:bg-white"
               >
-                Next Step
+                Confirm
               </button>
             </motion.div>
           )}
 
-          {/* Step 4: Refine Domains (Waterfall) */}
-          {step === 'refine_domains' && (
-            <motion.div 
-              key="refine_domains"
+          {step === 'refine_domains' && currentRefineDomain && (
+            <motion.div
+              key={`refine-${currentRefineId}`}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -375,77 +511,53 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               className="flex flex-col h-full overflow-y-auto no-scrollbar"
             >
               <h2 className="text-xl font-bold mb-2 text-center">Refine Your Focus</h2>
-              <p className="text-sm text-slate-500 mb-8 text-center">Help AI understand your specific intent.</p>
+              <p className="text-sm text-slate-500 mb-2 text-center">
+                Domain {refineIndex + 1} of {selectedDomainIds.length}
+              </p>
+              <p className="text-sm text-slate-500 mb-8 text-center">Select one or more specific intents (multi-select).</p>
 
-              <div className="space-y-6 pb-24">
-                {selectedDomainIds.map((id, index) => {
-                  const domain = DOMAINS.find(d => d.id === id)!;
-                  // Progressive Disclosure: Only show if previous one is answered (or it's the first one)
-                  const isVisible = index === 0 || !!refinedFocus[selectedDomainIds[index - 1]];
-                  
-                  if (!isVisible) return null;
-
-                  return (
-                    <motion.div
-                      key={id}
-                      initial={{ opacity: 0, y: 20, height: 0 }}
-                      animate={{ opacity: 1, y: 0, height: 'auto' }}
-                      transition={{ type: "spring", bounce: 0, duration: 0.4 }}
-                      className="bg-slate-900/80 p-5 rounded-3xl border border-slate-800"
-                    >
-                      <div className="flex items-center gap-3 mb-4">
-                        <span className="text-2xl">{domain.icon}</span>
-                        <h3 className="font-bold text-indigo-300">{domain.title}</h3>
-                      </div>
-                      <p className="text-xs text-slate-500 mb-3 uppercase tracking-wider font-semibold">I want to focus on:</p>
-                      <div className="space-y-2">
-                        {domain.options.map((opt, idx) => (
-                          <button
-                            key={idx}
-                            onClick={() => {
-                              selectFocus(id, opt);
-                              // Auto-scroll to bottom to reveal next question if needed
-                              setTimeout(() => {
-                                const container = document.querySelector('.overflow-y-auto');
-                                if (container) container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-                              }, 100);
-                            }}
-                            className={`w-full text-left px-4 py-3 rounded-xl text-sm transition-all border relative overflow-hidden
-                              ${refinedFocus[id] === opt 
-                                ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-900/50' 
-                                : 'bg-slate-800/50 text-slate-300 border-transparent hover:bg-slate-800'}
-                            `}
-                          >
-                            {refinedFocus[id] === opt && (
-                              <motion.div 
-                                layoutId={`highlight-${id}`}
-                                className="absolute inset-0 bg-white/10" 
-                              />
-                            )}
-                            <span className="relative z-10">{opt}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </motion.div>
-                  );
-                })}
+              <div className="bg-slate-900/80 p-5 rounded-3xl border border-slate-800 mb-28">
+                <div className="flex items-center gap-3 mb-4">
+                  <span className="text-2xl">{currentRefineDomain.icon}</span>
+                  <h3 className="font-bold text-indigo-300">{currentRefineDomain.title}</h3>
+                </div>
+                <p className="text-xs text-slate-500 mb-3 uppercase tracking-wider font-semibold">I want to focus on:</p>
+                <div className="space-y-2">
+                  {currentRefineDomain.options.map((opt) => {
+                    const picked = refinedOptions[currentRefineId]?.includes(opt);
+                    return (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => toggleRefineOption(currentRefineId, opt)}
+                        className={`w-full text-left px-4 py-3 rounded-xl text-sm transition-all border relative overflow-hidden
+                          ${picked
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-900/50'
+                            : 'bg-slate-800/50 text-slate-300 border-transparent hover:bg-slate-800'}
+                        `}
+                      >
+                        <span className="relative z-10">{opt}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="fixed bottom-6 left-0 right-0 px-6 max-w-md mx-auto">
-                <button 
-                  disabled={Object.keys(refinedFocus).length !== 3}
-                  onClick={() => setStep('preview')}
+                <button
+                  disabled={!canRefineConfirm}
+                  onClick={handleRefineConfirm}
                   className="w-full py-4 bg-slate-50 text-slate-950 rounded-2xl font-bold disabled:opacity-30 transition-all shadow-xl shadow-black/50 hover:bg-white"
+                  type="button"
                 >
-                  Generate Compass
+                  {refineIndex >= selectedDomainIds.length - 1 ? 'Continue' : 'Confirm'}
                 </button>
               </div>
             </motion.div>
           )}
 
-          {/* Step 5: Preview (Magic) */}
           {step === 'preview' && (
-            <motion.div 
+            <motion.div
               key="preview"
               variants={pageVariants}
               initial="initial"
@@ -453,7 +565,7 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               exit="exit"
               className="flex flex-col items-center text-center justify-center h-full"
             >
-              <motion.div 
+              <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: "spring", stiffness: 200, damping: 15 }}
@@ -461,12 +573,11 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               >
                 <Sparkles className="text-yellow-400" size={40} />
               </motion.div>
-              
+
               <h2 className="text-2xl font-bold mb-2">Compass Calibrated</h2>
               <p className="text-sm text-slate-400 mb-10">See how your themes work their magic:</p>
-              
-              {/* Simulated UI Card */}
-              <motion.div 
+
+              <motion.div
                 initial={{ y: 20, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.3 }}
@@ -474,9 +585,9 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
               >
                 <div className="absolute top-0 left-0 w-1 h-full bg-yellow-500"></div>
                 <p className="text-xs text-slate-500 text-left mb-2">When you enter:</p>
-                <p className="text-xl font-bold text-left mb-4 text-white">"Trip to Yunnan"</p>
-                
-                <motion.div 
+                <p className="text-xl font-bold text-left mb-4 text-white">&quot;Trip to Yunnan&quot;</p>
+
+                <motion.div
                   initial={{ x: -20, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
                   transition={{ delay: 1.2 }}
@@ -484,17 +595,19 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
                 >
                   <Sparkles size={16} className="shrink-0 mt-0.5" />
                   <span className="text-left">
-                    AI: Matches <span className="text-yellow-400 font-bold">Inner Wild</span>.<br/>
+                    AI: Matches <span className="text-yellow-400 font-bold">Inner Wild</span>.<br />
                     Marked as <span className="font-bold text-white">ANCHOR</span> task.
                   </span>
                 </motion.div>
               </motion.div>
 
-              <button 
-                onClick={handleComplete} 
-                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-600/30 hover:bg-indigo-500 hover:scale-[1.02] active:scale-[0.98] transition-all"
+              <button
+                disabled={saving}
+                onClick={() => void handleComplete()}
+                className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-600/30 hover:bg-indigo-500 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50"
+                type="button"
               >
-                Start Your Journey
+                {saving ? <Loader2 className="animate-spin inline-block" size={22} /> : 'Start Your Journey'}
               </button>
             </motion.div>
           )}

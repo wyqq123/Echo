@@ -10,7 +10,14 @@ import EchoOnboarding from './components/EchoOnboarding';
 import { semanticLeafMerge, generateQuarterlyReview } from './services/geminiService';
 import { useUserStore } from './store/useUserStore';
 import { useAuthStore } from './store/useAuthStore';
-import { fetchTasks, fetchFocusThemes, saveTasks, saveFocusThemes } from './services/userDataApi';
+import {
+  fetchTasks,
+  fetchFocusThemes,
+  fetchMeProfile,
+  completeOnboarding,
+  saveTasks,
+  saveFocusThemes,
+} from './services/userDataApi';
 import AuthScreen from './components/AuthScreen';
 import { getCurrentQuarterId } from './utils/dateUtils';
 
@@ -64,6 +71,13 @@ const reducer = (state: AppState, action: Action): AppState => {
         quarterlyGoal: action.payload.quarterlyThemes.length > 0 
           ? action.payload.quarterlyThemes.map(t => t.intent).join(', ')
           : state.quarterlyGoal
+      };
+
+    case 'RESET_ONBOARDING':
+      return {
+        ...state,
+        onboardingCompleted: false,
+        userProfile: undefined,
       };
 
     default:
@@ -120,10 +134,23 @@ const App: React.FC = () => {
     let cancelled = false;
     void (async () => {
       try {
-        const [t, th] = await Promise.all([fetchTasks(), fetchFocusThemes()]);
+        const [t, th, me] = await Promise.all([fetchTasks(), fetchFocusThemes(), fetchMeProfile()]);
         if (cancelled) return;
         setTasks(t);
         setFocusThemes(th);
+        if (me.onboardingCompletedAt) {
+          const profile: UserProfile = {
+            name: me.displayName || user.email.split('@')[0] || 'Traveler',
+            avatar: me.avatarUrl || undefined,
+            quarterlyThemes: th,
+            identity: me.roleIds?.[0] ?? null,
+            roleIds: me.roleIds ?? [],
+            domain: me.fieldDomain || '',
+          };
+          dispatch({ type: 'COMPLETE_ONBOARDING', payload: profile });
+        } else {
+          dispatch({ type: 'RESET_ONBOARDING' });
+        }
       } catch (e) {
         console.error('Failed to load server data', e);
       } finally {
@@ -133,7 +160,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [sessionBootstrapped, accessToken, user?.id, setTasks, setFocusThemes]);
+  }, [sessionBootstrapped, accessToken, user?.id, user?.email, setTasks, setFocusThemes]);
 
   useEffect(() => {
     if (!sessionBootstrapped || !accessToken || !user || !serverDataReady) return;
@@ -276,7 +303,18 @@ const App: React.FC = () => {
     setTasks(updatedTasks);
   };
 
-  const handleOnboardingComplete = (profile: UserProfile) => {
+  const handleOnboardingComplete = async (
+    profile: UserProfile,
+    options: { skippedQuarterlyThemes: boolean }
+  ) => {
+    await completeOnboarding({
+      displayName: profile.name,
+      fieldDomain: profile.domain ?? '',
+      roleIds: profile.roleIds?.length ? profile.roleIds : profile.identity ? [profile.identity] : [],
+      skippedQuarterlyThemes: options.skippedQuarterlyThemes,
+      themes: options.skippedQuarterlyThemes ? undefined : profile.quarterlyThemes,
+      ...(profile.avatar !== undefined ? { avatarUrl: profile.avatar ?? null } : {}),
+    });
     dispatch({ type: 'COMPLETE_ONBOARDING', payload: profile });
   };
 
