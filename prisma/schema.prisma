@@ -48,11 +48,22 @@ model FocusTheme {
 model Task {
   id        String   @id
   userId    String   @map("user_id")
+  title     String?  @map("title")
+  status    String?  @map("status")
+  isAnchor  Boolean  @default(false) @map("is_anchor")
+  isFrozen  Boolean  @default(false) @map("is_frozen")
+  isArchived Boolean @default(false) @map("is_archived")
+  completed Boolean  @default(false) @map("completed")
+  dateStr   String?  @map("date_str")
+  startTime String?  @map("start_time")
+  duration  Int?     @map("duration")
   payload   Json
   updatedAt DateTime @updatedAt @map("updated_at")
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([userId, dateStr])
+  @@index([userId, status])
 }
 
 model FunnelRun {

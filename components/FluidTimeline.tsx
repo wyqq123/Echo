@@ -176,6 +176,33 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
     return TaskStatus.PENDING;
   };
 
+  const projectDropToTimeline = (eventLike: { clientX: number; clientY: number }, state: NonNullable<typeof dragState>) => {
+    if (!containerRef.current) return state.originalTasks;
+    const currentTask = tasks.find(t => t.id === state.id) || state.originalTasks.find(t => t.id === state.id);
+    if (!currentTask) return state.originalTasks;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const clickX = eventLike.clientX - rect.left;
+    const timelineContentX = clickX - TIME_LABEL_WIDTH;
+    const columnWidth = (rect.width - TIME_LABEL_WIDTH) / 2;
+    const targetDate =
+      timelineContentX < columnWidth ? leftDate : rightDate;
+    const targetDateStr = format(targetDate, 'yyyy-MM-dd');
+
+    const absoluteY = eventLike.clientY - rect.top + containerRef.current.scrollTop;
+    const startMins = clampMinutes(pxToMinutes(absoluteY));
+
+    const updatedActiveTask: Task = {
+      ...currentTask,
+      isFrozen: false,
+      status: getScheduledStatus(currentTask),
+      startTime: minutesToTime(startMins),
+      dateStr: targetDateStr,
+    };
+
+    return placeTaskOnTimeline(updatedActiveTask, tasks);
+  };
+
   const placeTaskOnTimeline = (taskToPlace: Task, sourceTasks: Task[]) => {
     const remainingTasks = sourceTasks.filter(t => t.id !== taskToPlace.id);
     const sameDayTasks = remainingTasks
@@ -440,7 +467,10 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       if (dragState) {
         const dropTarget = getDropTarget(e.clientX, e.clientY);
 
-        if (dropTarget === 'pool') {
+        if (dropTarget === 'timeline') {
+          // Finalize drop even if there was no last mousemove inside timeline.
+          onUpdateTasks(projectDropToTimeline(e, dragState));
+        } else if (dropTarget === 'pool') {
           onUpdateTasks(moveTaskToPool(dragState.id, dragState.originalTasks));
         } else if (dropTarget === 'outside') {
           onUpdateTasks(dragState.originalTasks);
