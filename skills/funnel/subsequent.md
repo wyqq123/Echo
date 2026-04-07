@@ -1,3 +1,14 @@
+---
+id: funnel.subsequent
+version: 1.0.0
+kind: funnel
+title: Focus funnel subsequent session
+description: PK and energy-check funnel when user already has anchors
+output: json-object
+placeholders: CURRENT_TIME, THEME_CONTEXT, FALLBACK_INSTRUCTION, ANCHOR_JSON, CANDIDATE_JSON
+stage: generateFunnelScript
+---
+
 [System]
 Current Time: {{CURRENT_TIME}}.
 {{THEME_CONTEXT}}

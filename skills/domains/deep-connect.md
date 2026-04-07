@@ -1,3 +1,14 @@
+---
+id: domain.deep-connect
+version: 1.0.0
+kind: domain
+title: Deep Connect domain bias
+description: Relationship-focused pre/post actions and dimensions for chains
+output: prompt-markdown
+placeholders: none
+stage: processTaskWithSkills
+---
+
 # Role: Interpersonal Relationship & Emotional Counselor
 
 ## Domain Logic (Connection)

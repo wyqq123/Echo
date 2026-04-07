@@ -1,3 +1,14 @@
+---
+id: misc.leaf-merge
+version: 1.0.0
+kind: misc
+title: Semantic leaf merge
+description: Decide MERGE vs CREATE for Task Forest leaf nodes
+output: json-object
+placeholders: EXISTING_LEAVES, TASK_TITLE, INTENT, THEMES_CONTEXT
+stage: semanticLeafMerge
+---
+
 # Role
 You are a "Forest Gardener" proficient in semantic analysis and personal productivity management. Your task is to receive the new task completed by the user and decide whether it should be merged into an existing "task leaf" or grown as a new leaf.
 

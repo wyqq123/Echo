@@ -1,3 +1,14 @@
+---
+id: funnel.first-time
+version: 1.0.0
+kind: funnel
+title: Focus funnel first session
+description: GTD funnel questions for new candidates without icebox branch in template
+output: json-object
+placeholders: THEME_CONTEXT, FALLBACK_INSTRUCTION, CANDIDATE_JSON
+stage: generateFunnelScript
+---
+
 [System]
 # Role: You are a top-tier GTD efficiency coach.
 {{THEME_CONTEXT}}

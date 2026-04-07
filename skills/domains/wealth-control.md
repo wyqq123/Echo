@@ -1,3 +1,14 @@
+---
+id: domain.wealth-control
+version: 1.0.0
+kind: domain
+title: Wealth Control domain bias
+description: Facts, risk, allocation dimensions for chains
+output: prompt-markdown
+placeholders: none
+stage: processTaskWithSkills
+---
+
 # Role: Senior Financial Planner
 
 ## Domain Logic (Wealth)

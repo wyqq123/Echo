@@ -1,3 +1,14 @@
+---
+id: chain.dimensional-decomposer
+version: 1.0.0
+kind: chain
+title: DIMENSIONAL goal decomposition
+description: ObjectiveExtractor, DimensionMapper, DimensionalDecomposer as one Markdown plan
+output: markdown
+placeholders: DOMAIN_SKILL, URGENCY_NOTE, SCOPE_INSTRUCTION, TASK_TEXT, TASK_TITLE
+stage: processTaskWithSkills
+---
+
 {{DOMAIN_SKILL}}
 
 You are now executing the DIMENSIONAL skill chain and need to complete the following three atomic skills in sequence:
@@ -42,3 +53,7 @@ Output Format (Directly output usable Markdown):
 **Dimension 3: [Dimension Name]**
 - [Subtask 1] (Estimated: Xh)
 - [Subtask 2] (Estimated: Xh)
+
+## Output Constraints
+- **Dimension**: each subtask under the dimension should be no more than 30 characters
+- Total word count no more than 500 words

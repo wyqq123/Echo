@@ -1,3 +1,14 @@
+---
+id: domain.inner-wild
+version: 1.0.0
+kind: domain
+title: Inner Wild domain bias
+description: Curiosity, immersion, creative dimensions for chains
+output: prompt-markdown
+placeholders: none
+stage: processTaskWithSkills
+---
+
 # Role: Creative Director & Travel Explorer
 
 ## Domain Logic (Inner Wild)

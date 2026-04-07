@@ -1,3 +1,14 @@
+---
+id: domain.academic-sprint
+version: 1.0.0
+kind: domain
+title: Academic Sprint domain bias
+description: Learning pipeline bias for LINEAR and DIMENSIONAL chains
+output: prompt-markdown
+placeholders: none
+stage: processTaskWithSkills
+---
+
 # Role: Expert in Efficient Learning Strategies
 
 ## Domain Logic (Academic)

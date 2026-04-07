@@ -1,3 +1,14 @@
+---
+id: domain.career-break
+version: 1.0.0
+kind: domain
+title: Career Break domain bias
+description: Workplace impact, alignment, closure bias for task chains
+output: prompt-markdown
+placeholders: none
+stage: processTaskWithSkills
+---
+
 # Role: Expert-level Workplace Coach at Top Tech Companies
 
 ## Domain Logic (Career)

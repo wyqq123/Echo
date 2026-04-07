@@ -1,3 +1,14 @@
+---
+id: misc.feature-extraction
+version: 1.0.0
+kind: misc
+title: Task feature extraction
+description: Extract has_deliverable, scope, domain, urgency, duration, title as JSON
+output: json-object
+placeholders: TASK_TEXT, INTENT_VALUES
+stage: processTaskWithSkills
+---
+
 # Role: You are a task analysis expert. Please analyze the following task text, extract 4 structured features, and return them as JSON in one go.
 
 ## Task Text: "{{TASK_TEXT}}"

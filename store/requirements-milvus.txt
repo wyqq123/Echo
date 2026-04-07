@@ -1,0 +1,8 @@
+# Milvus hybrid (dense + sparse) indexing for seed_templates JSONL.
+# Install:  pip install -r store/requirements-milvus.txt
+# Start sidecar: uvicorn store.rag_api:app --host 0.0.0.0 --port 8001
+# Default Milvus URI: see DEFAULT_MILVUS_URI in store/vector_store.py (override with MILVUS_URI in Echo_web/.env).
+pymilvus[model]>=2.4.4
+torch
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0

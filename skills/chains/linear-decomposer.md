@@ -1,3 +1,14 @@
+---
+id: chain.linear-decomposer
+version: 1.0.0
+kind: chain
+title: LINEAR workflow decomposition
+description: DeliverableExtractor, BlockerIdentifier, LinearDecomposer as one Markdown workflow
+output: markdown
+placeholders: DOMAIN_SKILL, URGENCY_NOTE, SCOPE_INSTRUCTION, TASK_TEXT, TASK_TITLE
+stage: processTaskWithSkills
+---
+
 {{DOMAIN_SKILL}}
 
 You are now executing the LINEAR skill chain and need to complete the following three atomic skills in sequence:
@@ -39,3 +50,11 @@ Output Format (Directly output usable Markdown, no JSON wrapping):
 **Post-actions (Delivery & Closure):**
 - [Closure item 1]
 - [Closure item 2]
+
+## Output Constraints
+- **Starter**: 1 line, no more than 30 characters
+- **Pre-actions**: up to 2 items, each no more than 20 characters
+- **Core execution**: 2-4 items, each in the format 'Verb Phrase → Deliverable', no more than 30 characters
+- **Post-actions**: 1-2 items, each no more than 20 characters
+- Do not output any explanatory text or sentences with 'because/so'
+- Total word count no more than 500 words

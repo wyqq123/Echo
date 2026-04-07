@@ -20,6 +20,9 @@ const HOUR_HEIGHT = 60;
 const SNAP_MINUTES = 15;
 const MINUTE_HEIGHT = HOUR_HEIGHT / 60;
 const HEADER_HEIGHT = 40; // Height of the sticky day header (h-10)
+const TIME_LABEL_WIDTH = 48;
+const TIMELINE_BODY_HEIGHT = HOUR_HEIGHT * 24;
+const TIMELINE_TOTAL_HEIGHT = TIMELINE_BODY_HEIGHT + HEADER_HEIGHT;
 
 const INTENT_CONFIG = [
   { type: TaskIntent.BODY_MIND, color: 'bg-green-500/20 text-green-400 border-green-500/40' },
@@ -44,9 +47,13 @@ const minutesToTime = (totalMinutes: number): string => {
   return `${String(Math.max(0, Math.min(23, h))).padStart(2, '0')}:${String(Math.max(0, m)).padStart(2, '0')}`;
 };
 
+const clampMinutes = (minutes: number) => Math.max(0, Math.min((24 * 60) - SNAP_MINUTES, minutes));
+
+const minutesToPixels = (minutes: number) => (minutes / 60) * HOUR_HEIGHT;
+
 // Convert pixels to snapped minutes (Adjusted for Header Offset)
 const pxToMinutes = (px: number) => {
-  const contentPx = px - HEADER_HEIGHT; 
+  const contentPx = Math.max(0, px - HEADER_HEIGHT);
   const rawMinutes = contentPx / MINUTE_HEIGHT;
   return Math.round(rawMinutes / SNAP_MINUTES) * SNAP_MINUTES;
 };
@@ -154,10 +161,62 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
     startY: number;
     originalStart: number;
     originalDuration: number;
+    startedOffTimeline: boolean;
+    originalTasks: Task[];
     originalDateStr?: string;
   } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const poolRef = useRef<HTMLDivElement>(null);
+  const iceboxRef = useRef<HTMLDivElement>(null);
+
+  const getScheduledStatus = (task: Task) => {
+    if (task.status === TaskStatus.ICEBREAKER) return TaskStatus.ICEBREAKER;
+    if (task.isAnchor || task.status === TaskStatus.ANCHOR) return TaskStatus.ANCHOR;
+    return TaskStatus.PENDING;
+  };
+
+  const placeTaskOnTimeline = (taskToPlace: Task, sourceTasks: Task[]) => {
+    const remainingTasks = sourceTasks.filter(t => t.id !== taskToPlace.id);
+    const sameDayTasks = remainingTasks
+      .filter(t => !t.isFrozen && t.dateStr === taskToPlace.dateStr && t.startTime)
+      .map(t => ({ ...t }));
+
+    const resolvedTasks = resolveCollisions({ ...taskToPlace }, sameDayTasks);
+    const otherTasks = remainingTasks.filter(
+      t => t.isFrozen || t.dateStr !== taskToPlace.dateStr || !t.startTime
+    );
+
+    return [...otherTasks, ...resolvedTasks];
+  };
+
+  const moveTaskToPool = (taskId: string, sourceTasks: Task[]) => sourceTasks.map(task => {
+    if (task.id !== taskId) return task;
+    return {
+      ...task,
+      isFrozen: false,
+      isAnchor: false,
+      status: TaskStatus.PENDING,
+      startTime: undefined,
+      dateStr: undefined,
+    };
+  });
+
+  const isPointInsideRect = (x: number, y: number, rect: DOMRect | null) => {
+    if (!rect) return false;
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  };
+
+  const getDropTarget = (clientX: number, clientY: number) => {
+    const timelineRect = containerRef.current?.getBoundingClientRect() ?? null;
+    const poolRect = poolRef.current?.getBoundingClientRect() ?? null;
+    const iceboxRect = iceboxRef.current?.getBoundingClientRect() ?? null;
+
+    if (isPointInsideRect(clientX, clientY, timelineRect)) return 'timeline';
+    if (isPointInsideRect(clientX, clientY, poolRect)) return 'pool';
+    if (isPointInsideRect(clientX, clientY, iceboxRect)) return 'icebox';
+    return 'outside';
+  };
 
   // --- Handlers ---
   const handleOpenIceboxModal = (type: 'shatter' | 'melt') => {
@@ -307,38 +366,8 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
 
     // A. Dragging from Pool/Icebox (Not yet on Grid)
     if (!task.startTime || !task.dateStr || task.isFrozen) {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        
-        // 1. Calculate Y position (Time) relative to scroll container
-        //    Adjust for scrollTop to find absolute position in scrollable area
-        const clickY = e.clientY - rect.top + containerRef.current.scrollTop;
-        startMins = pxToMinutes(clickY);
-        
-        // 2. Calculate X position (Date Column)
-        const clickX = e.clientX - rect.left;
-        const timelineContentX = clickX - 48; // Left label width
-        const columnWidth = (rect.width - 48) / 2;
-        
-        const targetDate = (timelineContentX > 0 && timelineContentX < columnWidth) ? leftDate : rightDate;
-        dateStr = format(targetDate, 'yyyy-MM-dd');
-
-        // 3. "Teleport" to grid immediately visually
-        const updatedTask = {
-          ...task,
-          startTime: minutesToTime(Math.max(0, startMins)),
-          dateStr: dateStr,
-          isFrozen: false,
-          status: TaskStatus.ANCHOR // Or retain category, but ensure it shows on grid
-        };
-        
-        // Update state immediately so it renders on grid and we can drag it
-        const dayTasks = tasks.filter(t => t.dateStr === updatedTask.dateStr && t.id !== task.id);
-        const resolved = resolveCollisions(updatedTask, dayTasks);
-        const others = tasks.filter(t => t.dateStr !== updatedTask.dateStr && t.id !== task.id);
-        
-        onUpdateTasks([...others, ...resolved]);
-      }
+      startMins = 9 * 60;
+      dateStr = format(leftDate, 'yyyy-MM-dd');
     }
 
     setDragState({
@@ -347,6 +376,8 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       startY: e.clientY,
       originalStart: startMins,
       originalDuration: task.duration,
+      startedOffTimeline: !task.startTime || !task.dateStr || task.isFrozen,
+      originalTasks: tasks.map(item => ({ ...item })),
       originalDateStr: dateStr
     });
   };
@@ -364,8 +395,9 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       // Calculate Grid Column (Date Switch)
       const rect = containerRef.current.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
-      const timelineContentX = clickX - 48;
-      const columnWidth = (rect.width - 48) / 2;
+      const timelineContentX = clickX - TIME_LABEL_WIDTH;
+      const columnWidth = (rect.width - TIME_LABEL_WIDTH) / 2;
+      const dropTarget = getDropTarget(e.clientX, e.clientY);
       
       let targetDateStr = dragState.originalDateStr;
       if (timelineContentX > 0 && timelineContentX < columnWidth * 2) {
@@ -376,28 +408,58 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       let newStart = dragState.originalStart;
       let newDuration = dragState.originalDuration;
 
-      if (dragState.type === 'move') {
-        newStart = Math.max(0, dragState.originalStart + deltaMinutes);
+      if (dragState.startedOffTimeline && dragState.type === 'move') {
+        const absoluteY = e.clientY - rect.top + containerRef.current.scrollTop;
+        newStart = clampMinutes(pxToMinutes(absoluteY));
+      } else if (dragState.type === 'move') {
+        newStart = clampMinutes(dragState.originalStart + deltaMinutes);
       } else {
         newDuration = Math.max(15, dragState.originalDuration + deltaMinutes);
       }
 
+      if (dropTarget !== 'timeline') {
+        return;
+      }
+
+      const currentTask = tasks.find(t => t.id === dragState.id);
+      if (!currentTask) return;
+
       const updatedActiveTask = {
-        ...tasks.find(t => t.id === dragState.id)!,
+        ...currentTask,
+        isFrozen: false,
+        status: getScheduledStatus(currentTask),
         startTime: minutesToTime(newStart),
         duration: newDuration,
         dateStr: targetDateStr
       };
 
-      // Real-time Fluid Collision Resolution
-      const dayTasks = tasks.filter(t => t.dateStr === updatedActiveTask.dateStr && t.id !== dragState.id);
-      const resolvedDayTasks = resolveCollisions(updatedActiveTask, dayTasks);
-      
-      const otherTasks = tasks.filter(t => t.dateStr !== updatedActiveTask.dateStr && t.id !== dragState.id);
-      onUpdateTasks([...otherTasks, ...resolvedDayTasks]);
+      onUpdateTasks(placeTaskOnTimeline(updatedActiveTask, tasks));
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = (e: MouseEvent) => {
+      if (dragState) {
+        const dropTarget = getDropTarget(e.clientX, e.clientY);
+
+        if (dropTarget === 'pool') {
+          onUpdateTasks(moveTaskToPool(dragState.id, dragState.originalTasks));
+        } else if (dropTarget === 'outside') {
+          onUpdateTasks(dragState.originalTasks);
+        } else if (dropTarget === 'icebox') {
+          onUpdateTasks(dragState.originalTasks.map(task => {
+            if (task.id !== dragState.id) return task;
+            return {
+              ...task,
+              isFrozen: true,
+              isAnchor: false,
+              status: TaskStatus.CANDIDATE,
+              startTime: undefined,
+              dateStr: undefined,
+              frozenSince: task.frozenSince || new Date().toISOString(),
+            };
+          }));
+        }
+      }
+
       setDragState(null);
     };
 
@@ -460,7 +522,7 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
         </div>
 
         {/* Scrollable Timeline */}
-        <div className="flex-1 overflow-y-auto no-scrollbar relative flex" ref={containerRef}>
+          <div className="flex-1 overflow-y-auto no-scrollbar relative flex" ref={containerRef}>
           
           {/* Time Labels */}
           <div className="w-12 flex-shrink-0 bg-slate-900/30 border-r border-slate-800/30 pt-10 z-10 sticky left-0 pointer-events-none">
@@ -472,13 +534,13 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
           </div>
 
           {/* Day Columns Container */}
-          <div className="flex-1 flex relative min-h-[1480px]"> 
+          <div className="flex-1 flex relative" style={{ minHeight: TIMELINE_TOTAL_HEIGHT }}> 
              {/* Background Grid Lines */}
-             <div className="absolute inset-0 z-0 pointer-events-none pt-10">
+             <div className="absolute left-0 right-0 z-0 pointer-events-none" style={{ top: HEADER_HEIGHT, height: TIMELINE_BODY_HEIGHT }}>
               {Array.from({ length: 24 }).map((_, i) => (
                 <div key={i} className="h-[60px] border-b border-slate-800/30 w-full" />
               ))}
-            </div>
+             </div>
 
             {/* Columns */}
             {[leftDate, rightDate].map((date, colIdx) => {
@@ -503,7 +565,7 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
                     </div>
 
                     {/* Tasks */}
-                    <div className="relative"> 
+                    <div className="relative" style={{ height: TIMELINE_BODY_HEIGHT }}> 
                       {colTasks.map(task => (
                         <FluidTaskCard 
                           key={task.id} 
@@ -526,7 +588,7 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       <div className="h-[40%] flex overflow-hidden">
         
         {/* Pool (Includes Drawer & Pending) */}
-        <div className="w-1/2 border-r border-slate-800 bg-[#0f172a] flex flex-col relative">
+        <div className="w-1/2 border-r border-slate-800 bg-[#0f172a] flex flex-col relative" ref={poolRef}>
           <div className="p-4 border-b border-slate-800/50 flex justify-between items-center bg-slate-900/50">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Pool ({drawerTasks.length})</span>
             <MapPin size={14} className="text-slate-600" />
@@ -566,7 +628,7 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
         </div>
 
         {/* Icebox */}
-        <div className="w-1/2 relative bg-slate-900 overflow-hidden flex flex-col">
+        <div className="w-1/2 relative bg-slate-900 overflow-hidden flex flex-col" ref={iceboxRef}>
           <div className="absolute inset-0 bg-cyan-900/10 z-0" />
           <div className="absolute inset-0 backdrop-blur-[2px] z-0" />
           <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
@@ -850,8 +912,8 @@ interface CardProps {
 
 const FluidTaskCard: React.FC<CardProps> = ({ task, onToggle, onMouseDown, onContextMenu, isDragging }) => {
   const startMins = timeToMinutes(task.startTime);
-  const topPos = (startMins / 60) * HOUR_HEIGHT;
-  const height = (task.duration / 60) * HOUR_HEIGHT;
+  const topPos = minutesToPixels(startMins);
+  const height = minutesToPixels(task.duration);
 
   const getCategoryColor = (cat: TaskCategory) => {
     switch(cat) {

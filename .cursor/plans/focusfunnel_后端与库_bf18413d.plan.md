@@ -82,8 +82,8 @@ flowchart LR
 
 - `**POST /api/auth/register`** / `**POST /api/auth/login`** / `**POST /api/auth/logout`**（或 refresh）
 - `**GET /api/me`**：返回当前用户基本信息
-- `**GET /api/focus-themes`** / `**PUT /api/focus-themes**`（整表替换或 PATCH 单条，与 `[setFocusThemes](d:\self_project\Echo_AIproduct\Echo_web\store\useUserStore.ts)` 行为对齐即可）
-- `**GET /api/tasks**` / `**PUT /api/tasks**`（全量同步）或 `**PATCH /api/tasks/:id**`（若你希望减少冲突，可后续再做）
+- `**GET /api/focus-themes`** / `**PUT /api/focus-themes`**（整表替换或 PATCH 单条，与 `[setFocusThemes](d:\self_project\Echo_AIproduct\Echo_web\store\useUserStore.ts)` 行为对齐即可）
+- `**GET /api/tasks`** / `**PUT /api/tasks**`（全量同步）或 `**PATCH /api/tasks/:id**`（若你希望减少冲突，可后续再做）
 
 所有路由除 register/login 外：**校验会话/JWT**，并 `**WHERE user_id = req.userId`**。
 

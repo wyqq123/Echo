@@ -1,3 +1,14 @@
+---
+id: funnel.first-time-icebox
+version: 1.0.0
+kind: funnel
+title: Focus funnel with icebox
+description: First-time funnel when icebox tasks are present
+output: json-object
+placeholders: THEME_CONTEXT, FALLBACK_INSTRUCTION, CANDIDATE_JSON, ICEBOX_JSON
+stage: generateFunnelScript
+---
+
 [System]
 # Role: You are a top-tier GTD efficiency coach.
 {{THEME_CONTEXT}}
