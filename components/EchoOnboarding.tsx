@@ -140,6 +140,8 @@ export default function EchoOnboarding({ onComplete }: EchoOnboardingProps) {
     identity: selectedRoleIds[0] ?? null,
     roleIds: selectedRoleIds,
     domain,
+    // Persist the full sub-role list so downstream RAG can resolve persona context
+    ...(dynamicDomains.length > 0 ? { subRoles: dynamicDomains } : {}),
   });
 
   const handleComplete = async () => {

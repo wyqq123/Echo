@@ -97,8 +97,12 @@ export interface UserProfile {
   quarterlyThemes: FocusTheme[];
   /** @deprecated Prefer roleIds; kept for prompts / backward compatibility */
   identity?: string | null;
+  /** Parent role IDs selected in Onboarding (e.g. ['Professional', 'Student']) */
   roleIds?: string[];
+  /** Free-text sub-role the user manually selected in Onboarding (e.g. 'Product Manager') */
   domain?: string;
+  /** Full LLM-generated sub-role list shown during Onboarding (e.g. ['Product Manager', 'R&D Engineer']) — used for RAG persona resolution */
+  subRoles?: string[];
 }
 
 export interface FocusTheme {

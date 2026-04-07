@@ -122,6 +122,33 @@ app.post('/api/qwen/embed-content', async (req, res) => {
   }
 });
 
+// ─── RAG sidecar proxy ────────────────────────────────────────────────────────
+// Forwards to the Python FastAPI sidecar (store/rag_api.py, default port 8001).
+// If the sidecar is unavailable, return an empty result list so FocusFunnel
+// gracefully falls back to the LLM chain.
+const RAG_API_URL = process.env.RAG_API_URL || 'http://localhost:8001';
+
+app.post('/api/rag/search', async (req, res) => {
+  try {
+    const upstream = await fetch(`${RAG_API_URL}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+    });
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => '');
+      console.warn('[rag-proxy] upstream error:', upstream.status, errText);
+      return res.json({ results: [], status: 'upstream_error', query: req.body?.query ?? '' });
+    }
+    const data = await upstream.json();
+    return res.json(data);
+  } catch (err) {
+    // Sidecar not running — silently degrade so the frontend falls back to chain.
+    console.warn('[rag-proxy] sidecar unavailable (is store/rag_api.py running?):', String(err));
+    return res.json({ results: [], status: 'unavailable', query: req.body?.query ?? '' });
+  }
+});
+
 app.listen(port, () => {
   console.log(`安全代理服务器已启动，监听端口: http://localhost:${port}`);
 });

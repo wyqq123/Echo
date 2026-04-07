@@ -271,6 +271,191 @@ export function skillsRouter(features: TaskFeatures): SkillChainConfig {
 }
 
 // ─────────────────────────────────────────────
+// RAG Layer: template-first workflow generation
+// retrieve → render template OR fall back to chain
+// ─────────────────────────────────────────────
+
+/** Minimum hybrid score for a template hit to be used directly (skip chain). */
+const RAG_CONFIDENCE_THRESHOLD = 0.005;
+
+/** The three personas present in the seed_templates collection. */
+const TEMPLATE_PERSONAS = ["Product Manager", "Operations", "Software Engineer"] as const;
+type TemplatePerson = (typeof TEMPLATE_PERSONAS)[number];
+
+interface LinearTemplateData {
+  starter: string;
+  pre_actions: string[];
+  core_execution: string[];
+  post_actions: string[];
+}
+
+interface DimensionalTemplateData {
+  core_objective: string;
+  success_criteria: string;
+  dimensions: Array<{ name: string; subtasks: string[] }>;
+}
+
+export interface RagTemplate {
+  template_id: string;
+  scenario_name: string;
+  persona: string;
+  domain: string;
+  decomposition_type: "linear" | "dimensional";
+  intent_signals: string[];
+  has_deliverable: boolean;
+  retrieval_metadata: { keywords: string[]; chain_equivalent: string };
+  output_template: {
+    linear: LinearTemplateData | null;
+    dimensional: DimensionalTemplateData | null;
+  };
+  _distance?: number;
+  _score?: number;
+}
+
+interface PersonaResolution {
+  /** One of the 3 template personas, or undefined if no confident match. */
+  persona: TemplatePerson | undefined;
+  /**
+   * high  → direct match from userProfile.domain (user explicitly chose this sub-role)
+   *         → use as Milvus hard pre-filter
+   * low   → inferred from userProfile.subRoles / roleIds
+   *         → enrich query only, skip hard filter
+   */
+  confidence: "high" | "low";
+}
+
+/**
+ * Resolve a `UserProfile` to one of the 3 template personas.
+ *
+ * Priority: domain (explicit choice) > subRoles (LLM list) > roleIds (parent role).
+ * Matching is case-insensitive keyword lookup.
+ */
+export function resolvePersonaFromProfile(profile?: UserProfile): PersonaResolution {
+  const empty: PersonaResolution = { persona: undefined, confidence: "low" };
+  if (!profile) return empty;
+
+  const pmKw = ["product manager", "pm", "产品经理", "产品"];
+  const sweKw = ["engineer", "developer", "r&d", "software", "dev", "programmer", "研发", "工程师", "开发"];
+  const opsKw = ["operations", "ops", "growth", "marketing", "market", "运营", "增长", "市场"];
+
+  const classify = (text: string): TemplatePerson | undefined => {
+    const t = text.toLowerCase();
+    if (pmKw.some((k) => t.includes(k))) return "Product Manager";
+    if (sweKw.some((k) => t.includes(k))) return "Software Engineer";
+    if (opsKw.some((k) => t.includes(k))) return "Operations";
+    return undefined;
+  };
+
+  // 1. Try userProfile.domain (user's explicit sub-role choice — highest confidence)
+  if (profile.domain?.trim()) {
+    const p = classify(profile.domain);
+    if (p) return { persona: p, confidence: "high" };
+  }
+
+  // 2. Try userProfile.subRoles (LLM-generated list shown during Onboarding)
+  if (profile.subRoles && profile.subRoles.length > 0) {
+    const counts: Partial<Record<TemplatePerson, number>> = {};
+    for (const sr of profile.subRoles) {
+      const p = classify(sr);
+      if (p) counts[p] = (counts[p] ?? 0) + 1;
+    }
+    const best = (Object.entries(counts) as [TemplatePerson, number][]).sort((a, b) => b[1] - a[1])[0];
+    if (best) return { persona: best[0], confidence: "low" };
+  }
+
+  // 3. Try parent roleIds as a coarse hint
+  for (const rid of profile.roleIds ?? []) {
+    const p = classify(rid);
+    if (p) return { persona: p, confidence: "low" };
+  }
+
+  return empty;
+}
+
+interface RagSearchOptions {
+  decomposition_type?: string;
+  has_deliverable?: boolean;
+  /** Exact persona name to pass as Milvus pre-filter (only when confidence is "high"). */
+  persona?: string;
+  top_k?: number;
+}
+
+async function ragSearch(query: string, options: RagSearchOptions = {}): Promise<RagTemplate[]> {
+  try {
+    const body: Record<string, unknown> = {
+      query,
+      top_k: options.top_k ?? 3,
+    };
+    if (options.decomposition_type) body.decomposition_type = options.decomposition_type.toLowerCase();
+    if (options.has_deliverable !== undefined) body.has_deliverable = options.has_deliverable;
+    if (options.persona) body.persona = options.persona;
+
+    const res = await fetch("/api/rag/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { results?: RagTemplate[] };
+    return data.results ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Render a seed_template's output_template into the same Markdown format that
+ * executeLinearChain / executeDimensionalChain produce, so downstream rendering
+ * is identical regardless of whether the result came from RAG or the LLM chain.
+ */
+export function renderTemplateAsWorkflowNote(template: RagTemplate, taskTitle: string): string {
+  const { decomposition_type: dt, output_template: ot } = template;
+
+  if (dt === "linear" && ot.linear) {
+    const t = ot.linear;
+    const preBlock =
+      t.pre_actions.length > 0 ? t.pre_actions.map((a) => `- ${a}`).join("\n") : "- (None)";
+    const coreBlock = t.core_execution.map((s) => `- ${s}`).join("\n");
+    const postBlock = t.post_actions.map((s) => `- ${s}`).join("\n");
+    return [
+      `**${taskTitle}** · LINEAR`,
+      "",
+      `**Starter (Immediate Action):**`,
+      `→ ${t.starter}`,
+      "",
+      `**Pre-actions (Preparations):**`,
+      preBlock,
+      "",
+      `**Core execution (Core Implementation):**`,
+      coreBlock,
+      "",
+      `**Post-actions (Delivery & Closure):**`,
+      postBlock,
+    ].join("\n");
+  }
+
+  if (dt === "dimensional" && ot.dimensional) {
+    const t = ot.dimensional;
+    const dimBlocks = t.dimensions
+      .map(
+        (dim, i) =>
+          `**Dimension ${i + 1}: ${dim.name}**\n` + dim.subtasks.map((s) => `- ${s}`).join("\n")
+      )
+      .join("\n\n");
+    return [
+      `**${taskTitle}** · DIMENSIONAL`,
+      "",
+      `**Core Objective:** ${t.core_objective}`,
+      `**Success Criteria (3 months):** ${t.success_criteria}`,
+      "",
+      dimBlocks,
+    ].join("\n");
+  }
+
+  return "";
+}
+
+// ─────────────────────────────────────────────
 // Stage 4a: LINEAR Skill Chain Execution
 // Chain: DeliverableExtractor → BlockerIdentifier → LinearDecomposer
 // ─────────────────────────────────────────────
@@ -343,7 +528,8 @@ async function executeDimensionalChain(
 
 export async function processTaskWithSkills(
   taskText: string,
-  focusThemes: FocusTheme[] = []
+  focusThemes: FocusTheme[] = [],
+  userProfile?: UserProfile
 ): Promise<SkillsResult> {
   // Stage 2: Feature extraction (single LLM call)
   const features = await extractFeatures(taskText);
@@ -392,12 +578,55 @@ export async function processTaskWithSkills(
   // Stage 3: Route (zero latency)
   const config = skillsRouter(features);
 
-  // Stage 4: Execute skill chain
+  // Stage 4: RAG-first — try to retrieve a matching seed template before calling the LLM chain.
   let workflowNote: string;
-  if (config.path === "LINEAR") {
-    workflowNote = await executeLinearChain(taskText, features, config);
-  } else {
-    workflowNote = await executeDimensionalChain(taskText, features, config);
+  let ragHit: RagTemplate | null = null;
+  try {
+    // Resolve persona from Onboarding profile context
+    const { persona: resolvedPersona, confidence: personaConfidence } =
+      resolvePersonaFromProfile(userProfile);
+
+    // Query enrichment: prepend persona context so BGE-M3 embeds a richer signal.
+    // E.g. "[Product Manager] write a PRD for new feature" matches PM templates better.
+    const enrichedQuery = resolvedPersona
+      ? `[${resolvedPersona}] ${taskText}`
+      : taskText;
+
+    const ragOptions: RagSearchOptions = {
+      decomposition_type: config.path,          // LINEAR / DIMENSIONAL pre-filter (reliable)
+      has_deliverable: features.has_deliverable, // symmetric with decomposition_type
+      top_k: 3,
+    };
+    // Hard persona pre-filter only when confidence is high (user explicitly chose this sub-role)
+    if (resolvedPersona && personaConfidence === "high") {
+      ragOptions.persona = resolvedPersona;
+    }
+
+    const hits = await ragSearch(enrichedQuery, ragOptions);
+    const top = hits[0];
+    if (top && (top._distance ?? 0) >= RAG_CONFIDENCE_THRESHOLD) {
+      const rendered = renderTemplateAsWorkflowNote(top, features.title);
+      if (rendered) {
+        ragHit = top;
+        workflowNote = rendered;
+        console.log(
+          `[RAG] hit template_id=${top.template_id} persona=${top.persona}` +
+          ` score=${top._distance?.toFixed(4)} resolvedPersona=${resolvedPersona ?? "none"}` +
+          ` confidence=${personaConfidence} for "${features.title}"`
+        );
+      }
+    }
+  } catch (ragErr) {
+    console.warn("[RAG] search failed, falling back to chain:", ragErr);
+  }
+
+  // Stage 4 fallback: run LLM skill chain if RAG didn't produce a result
+  if (!ragHit) {
+    if (config.path === "LINEAR") {
+      workflowNote = await executeLinearChain(taskText, features, config);
+    } else {
+      workflowNote = await executeDimensionalChain(taskText, features, config);
+    }
   }
 
   return {
@@ -405,7 +634,7 @@ export async function processTaskWithSkills(
     intent: features.domain,
     duration: features.estimated_duration,
     decomposition_type: config.path,
-    workflowNote,
+    workflowNote: workflowNote!,
   };
 }
 
@@ -425,7 +654,7 @@ export const parseBrainDump = async (text: string, focusThemes: FocusTheme[] = [
  
     // Stage 2-4: Feature extraction + workflow — parallel across tasks
     const skillsResults = await Promise.all(
-      taskTexts.map(taskText => processTaskWithSkills(taskText, focusThemes))
+      taskTexts.map(taskText => processTaskWithSkills(taskText, focusThemes, userProfile))
     );
 
     // Map to Partial<Task>
