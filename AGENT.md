@@ -1,188 +1,202 @@
 # AGENT.md
 
-## Product Summary
+## Purpose
 
-`Echo_web` is an AI-assisted daily planning product. The core loop is:
+This file is the working handbook for coding agents operating in `Echo_web`.
 
-1. The user brain-dumps work into the Funnel.
-2. AI decomposes and classifies that input into structured tasks.
-3. The user curates and schedules those tasks in the Timeline.
-4. Task completion feeds the Compass/Forest layer and quarterly review logic.
-5. Authenticated users sync tasks, themes, and funnel runs to the backend.
+`Echo_web` combines:
 
-The product is centered around one shared domain object: `Task`.
+- a React + Vite client
+- a Node/Express backend
+- Prisma persistence
+- Zustand runtime state
+- an AI orchestration layer
+- prompt assets under `skills/`
+- several user-facing modules that all depend on the same `Task` lifecycle
 
-If a change alters how a task is created, scheduled, completed, frozen, revived, or persisted, assume the change may affect all four product surfaces:
+Small local edits can easily create product-level regressions. Agents must therefore use this file as an execution contract, not as optional guidance.
+
+## Memory Activation (Must be executed for each new conversation)
+
+Follow **Injection Types** and **Recall Protocol** in `MEMORY.md`. At minimum:
+
+### Step 1: Instruction + global memory
+1. This file (`AGENT.md`) — instruction memory (already in scope when injected).
+2. `MEMORY.md` — index, knowledge routing, injection/recall/write-back rules.
+3. `memory/metadata/memory-policy.md` and `memory/metadata/project-profile.md` — behavior and snapshot (load once per conversation; cache unless edited).
+4. `memory/main.md` — roadmap, active branch pointer, memory taxonomy.
+
+### Step 2: Task memory
+1. Read the active branch file (default `memory/branch/active-default.md` unless `memory/main.md` points elsewhere).
+2. If it links to **`memory/tasks/<task>.md`**, open that file for full goal, plan, progress, working context, and decision log.
+3. For **iteration-level** scope (goals, blockers, release boundaries), use `doc/iterations/current/README.md` — do not duplicate long execution notes there; keep drill-down in `memory/tasks/`.
+
+### Step 3: Log memory (as needed)
+Skim recent entries in `memory/commit.md` for continuity on long or resumed threads. Open `memory/log.md` only when verbatim history or timeline reconstruction is needed.
+
+### Step 4: Knowledge memory (on demand)
+Pull **minimal** paths from `doc/` using the **Knowledge routing** table in `MEMORY.md`—not the whole tree.
+
+### Step 5: Confirm readiness (optional)
+When useful, one line: which files were read and the current task goal from the active branch.
+
+## Write-back rules (must be executed before the end of each conversation)
+See `MEMORY.md` § Write-back Protocol, then § Forgetting & archive **post-write check** (load `memory/metadata/forget-policy.md` only if triggers T1–T3 apply).
+
+
+## Environment Context
+
+### Product Snapshot
+
+Echo is an AI-assisted planning product for users who feel overloaded by too many tasks, fragmented time, and weak day-to-day execution follow-through.
+
+The product has four critical modules:
+
+- `Focus Funnel`
+  - turns a brain dump into structured tasks
+  - uses AI to decompose, classify, and prioritize work
+  - triggers a four-question decision flow when the user has too many candidate tasks
+
+- `Fluid Timeline`
+  - converts decisions into a schedule
+  - supports drag, resize, edit, drawer, and icebox flows
+  - is the main execution surface for daily tasks
+
+- `Commute Pod`
+  - supports short focused sessions for production, growth, or recovery
+  - is designed for fragmented time blocks such as commuting or micro-breaks
+
+- `Echo Compass`
+  - shows quarterly themes, task forest growth, synergy links, and AI review output
+  - helps the user see long-term value accumulation instead of only daily completion
+
+### Core Product Loop
+
+1. The user inputs messy thoughts into the Funnel.
+2. AI converts them into structured tasks and workflow notes.
+3. The user confirms, edits, and schedules work in the Timeline.
+4. Completion updates the Forest and quarterly review layer.
+5. Authenticated state is synchronized with the backend.
+
+### Shared Domain Object
+
+The product is centered around `Task`.
+
+If a change affects how a task is created, classified, scheduled, completed, frozen, revived, or persisted, assume the change may impact:
 
 - Funnel
 - Timeline
 - Compass
-- Pods
+- backend sync
+- AI prompts
 
-## Primary Goals For Any Agent
+## Documentation Navigation
 
-When working in this repo, optimize for these outcomes:
+Use the documentation set first before making structural changes.
 
-- Preserve the task lifecycle end-to-end.
-- Keep AI-generated structure editable by the user.
-- Avoid splitting business rules across too many layers.
-- Keep frontend state and server persistence consistent.
-- Respect the product's intentional UX language: Funnel, Icebox, Anchor, Icebreaker, Forest, Compass.
+| What you want to do | Where to look |
+|-----------|---------|
+| Understand the system architecture | `doc/architecture/overview.md` |
+| Understand module boundaries and dependency rules | `doc/architecture/boundaries.md` |
+| Review high-risk components (Funnel, Timeline, App shell) | `doc/architecture/component-notes.md` |
+| Check coding standards | `doc/conventions/coding-standards.md` |
+| Understand testing rules | `doc/conventions/testing.md` |
+| **Current iteration**: active goals, scope, blockers, release notes, deferred work | `doc/iterations/current/README.md` |
+| **Iterations folder**: how `current/` relates to evergreen change routing | `doc/iterations/README.md` |
+| **Route a code change** by area (where to start, what to verify) | `doc/iterations/change-routing.md` |
+| Understand API contracts | `doc/reference/api-spec.yaml` |
+| Understand error meanings and recovery guidance | `doc/reference/error-codes.md` |
+| Local commands and environment variables | `doc/reference/local-development.md` |
+| Known caveats (legacy naming, task save semantics, etc.) | `doc/reference/sharp-edges.md` |
+| **Project memory** (index, recall/write rules) | `MEMORY.md` |
+| **Memory store** (Git-like context, branches, milestones, log) | `memory/` — start with `memory/main.md` and `memory/metadata/memory-policy.md` |
 
-## Architecture Overview
+If a requested document does not exist yet, inspect the implementation directly and keep the new doc aligned with the code after your change.
 
-### Frontend Shell
+## Source Of Truth
 
-- `App.tsx`
-  - Top-level orchestration.
-  - Handles auth hydration, server bootstrap, local persistence for some app state, and tab routing.
-  - Bridges reducer-managed UI state with Zustand stores and server sync.
+Use these ownership rules before editing code.
 
-### Core Product Surfaces
+### Shared Type Contracts
 
-- `components/FocusFunnel.tsx`
-  - Brain-dump intake.
-  - AI task generation preview.
-  - Funnel decision matrix flow.
-  - First-time and subsequent prioritization behavior.
+- `types.ts` is the canonical source for:
+  - `Task`
+  - `FocusTheme`
+  - `LeafNode`
+  - enums
+  - shared app concepts
 
-- `components/FluidTimeline.tsx`
-  - Scheduling UI.
-  - Drawer and Icebox management.
-  - Task editing, drag/resize, and completion interactions.
+If task semantics change, update `types.ts` first.
 
-- `components/EchoCompass.tsx`
-  - Quarterly themes, forest growth, and synergy layer.
+### Client Runtime State
 
-- `components/CommutePod.tsx`
-  - Pod-oriented activity/ritual surface.
-
-- `components/EchoOnboarding.tsx`
-  - Captures initial user profile and quarterly themes.
-
-- `components/AuthScreen.tsx`
-  - Sign-in/sign-up entry.
-
-### Client State
-
-- `store/useUserStore.ts`
-  - Shared task/theme runtime state.
-  - Daily reset logic.
-  - Commute stats and AI report state.
-
-- `store/useAuthStore.ts`
-  - Auth session state.
-  - Access/refresh token flow.
-  - Session clear/reset behavior.
-
-### AI Layer
-
-- `services/geminiService.ts`
-  - Despite the filename, this is currently a Qwen/DashScope-backed orchestration layer through the local proxy endpoints.
-  - Owns task parsing, segmentation, feature extraction, decomposition routing, funnel script generation, semantic forest merge, and quarterly review generation.
-
-- `skills/`
-  - Prompt assets used by `geminiService.ts`.
-  - Treat these as product logic, not copywriting only.
-
-- `utils/skillLoader.ts`
-  - Imports raw prompt markdown and fills template variables.
-
-### API Layer
-
-- `server.js`
-  - Express entrypoint.
-  - Mounts auth and data routes.
-  - Exposes Qwen-compatible proxy endpoints for chat and embeddings.
-
-- `server/routes/*.js`
-  - Authenticated CRUD-like routes for tasks, focus themes, user info, and funnel run logging.
-
-### Persistence Layer
-
-- `prisma/schema.prisma`
-  - User, refresh token, focus theme, task, and funnel run schema.
-
-Important: tasks are persisted as JSON payload blobs keyed by `Task.id`, not decomposed into many relational task columns.
-
-## Source Of Truth Rules
-
-Use these boundaries when deciding where a change belongs.
-
-### Task Shape
-
-- `types.ts` is the canonical shared contract for `Task`, `FocusTheme`, `LeafNode`, enums, and app-level concepts.
-- If task semantics change, update `types.ts` first and then propagate carefully.
-
-### Task Runtime State
-
-- `useUserStore.ts` is the source of truth for active tasks and focus themes during runtime.
-- `App.tsx` coordinates when that state is fetched or saved to the server.
+- `store/useUserStore.ts` is the source of truth for runtime task/theme state.
+- `App.tsx` decides when that state is loaded from or saved to the server.
 
 ### Auth State
 
-- `useAuthStore.ts` is the source of truth for session/token handling.
-- Authenticated fetch behavior belongs in `services/userDataApi.ts`, not duplicated across components.
+- `store/useAuthStore.ts` is the source of truth for session handling.
+- `services/userDataApi.ts` is the correct place for authenticated data fetch logic.
 
 ### AI Behavior
 
-- Prompt logic belongs in `skills/`.
-- Prompt assembly and request/response normalization belong in `services/geminiService.ts`.
-- UI components should call the service, not embed prompt behavior inline.
+- prompt content belongs in `skills/`
+- prompt assembly and parsing belong in `services/geminiService.ts`
+- UI components must not embed prompt logic directly
 
 ### Persistence Contracts
 
-- Backend request/response contracts live in `server/routes/` and `services/userDataApi.ts`.
-- If you add fields to tasks/themes that must persist, verify both frontend typing and backend blob/route compatibility.
+- request/response behavior belongs in `server/routes/` and `services/userDataApi.ts`
+- if a new field must persist, verify typing, serialization, defaults, and route compatibility
 
-## Product Invariants
+## Hard Rules
 
-Do not violate these unless the change is explicitly intended and coordinated.
+These rules are mandatory.
 
-### Task Lifecycle Invariants
+### 1. Use Structured Logging
 
-- New AI-generated tasks start as `CANDIDATE`.
-- Funnel decisions promote tasks into `ANCHOR`, `ICEBREAKER`, `PENDING`, or later `DRAWER`.
-- Timeline scheduling depends on `startTime`, `dateStr`, `isAnchor`, and `status` staying coherent.
-- Frozen tasks represent the Icebox and use `isFrozen`.
-- Completed tasks can feed Forest growth and quarterly reporting.
+Do not add free-form ad hoc logs for new functionality.
 
-### Auth And Sync Invariants
+When adding or updating logs:
 
-- Unauthenticated users should not hit protected data routes as if they were logged in.
-- Refresh-token-based access recovery must continue working after auth-related edits.
-- Task/theme sync should not race initial hydration in `App.tsx`.
+- prefer structured logs over plain narrative strings
+- include stable event names
+- include relevant identifiers and state fields
+- avoid logging secrets, tokens, or sensitive personal data
 
-### AI Workflow Invariants
+Recommended pattern:
 
-- Funnel generation, task parsing, and decomposition must degrade gracefully when the AI path fails.
-- Fallback behavior should leave the user with usable tasks, not an empty screen.
-- Prompt edits should preserve machine-readable output expectations where JSON is required.
+```ts
+console.info('[echo.event]', {
+  event: 'task_saved',
+  taskId,
+  userId,
+  source: 'timeline',
+});
+```
 
-### Daily Reset Invariants
+Bad pattern:
 
-- Cross-day reset logic in `useUserStore.ts` is product logic, not a cosmetic behavior.
-- Unfinished anchors should move back out of the active schedule path according to current rules.
+```ts
+console.log('Task saved successfully and everything looks fine');
+```
 
-## Working Agreements For Agents
+### 2. Multi-Agent Collaboration Workflow Is Fixed
 
-### 1. Start With The Domain, Not The Component
+When new functionality or code modification is performed through multi-agent collaboration, the workflow must follow this order and role split:
 
-Before editing UI, identify which domain concept is being changed:
+1. `Agent1` implements the core feature.
+2. `echo-test-case-agent` writes or updates tests.
+3. `Agent3` updates documentation.
+4. `code-reviewer` performs code review.
 
-- task creation
-- task prioritization
-- task scheduling
-- task persistence
-- theme management
-- forest growth
-- auth/session flow
+This workflow is mandatory whenever multi-agent collaboration is used.
 
-Follow that concept through `types.ts`, store, service, component, and server before patching.
+Do not invent a different role split unless the user explicitly overrides this rule.
 
-### 2. Prefer Existing Vocabulary
+### 3. Preserve Product Vocabulary
 
-Use the product's established language in code and UX:
+Use the existing product language consistently:
 
 - Funnel
 - Anchor
@@ -193,266 +207,65 @@ Use the product's established language in code and UX:
 - Forest
 - Quarterly Themes
 
-Avoid introducing parallel naming for the same concept.
+Do not introduce competing names for the same concept.
 
-### 3. Keep AI Prompt Changes Narrow
+### 4. Preserve User Editability
+
+AI-generated fields such as title, duration, intent, workflow notes, and schedule metadata must remain user-editable unless the feature explicitly requires a lock.
+
+### 5. Keep Prompt Changes Narrow
 
 When editing `skills/`:
 
 - preserve placeholders expected by `fillTemplate`
-- preserve JSON-only output instructions when downstream parsing expects JSON
-- avoid changing both prompt schema and parser logic in unrelated ways at the same time unless necessary
+- preserve strict JSON output instructions where downstream parsing expects JSON
+- do not casually mix prompt changes with unrelated parser changes
 
-### 4. Preserve User Editability
+### 6. Avoid Silent Cross-Layer Drift
 
-AI-generated `workflowNote`, title, duration, intent, and scheduling information should remain editable in the UI unless the feature explicitly requires locking them.
-
-### 5. Respect The Existing Data Model
-
-Because tasks are stored as JSON payloads in Prisma:
-
-- new fields are relatively easy to add on the frontend
-- but they still require careful handling in typing, serialization, UI defaults, and migration expectations
-
-## Change Map: Where To Edit
-
-### If You Need To Change Brain-Dump Parsing
-
-Start here:
-
-- `services/geminiService.ts`
-- `skills/task-segmentation.md`
-- `skills/feature-extraction.md`
-- relevant chain/domain prompt files in `skills/`
-
-Check impact on:
-
-- `components/FocusFunnel.tsx`
-- `types.ts`
-
-### If You Need To Change Funnel Prioritization Logic
-
-Start here:
-
-- `services/geminiService.ts`
-- `skills/funnel/first-time.md`
-- `skills/funnel/first-time-icebox.md`
-- `skills/funnel/subsequent.md`
-
-Check impact on:
-
-- `components/FocusFunnel.tsx`
-- `types.ts`
-- `services/userDataApi.ts` if logging shape changes
-
-### If You Need To Change Scheduling Behavior
-
-Start here:
-
-- `components/FluidTimeline.tsx`
-
-Check impact on:
+If you change task shape or lifecycle semantics, check all of the following before finishing:
 
 - `types.ts`
-- `store/useUserStore.ts`
-- `App.tsx`
+- affected component
+- affected store
+- AI service if relevant
+- API route if persistence is involved
 
-### If You Need To Change Task Persistence
+## Product Invariants
 
-Start here:
+Do not break these unless the change is intentional and documented.
 
-- `services/userDataApi.ts`
-- `server/routes/tasks.js`
-- `prisma/schema.prisma` only if persistence strategy changes materially
+### Task Lifecycle
 
-Check impact on:
+- AI-generated tasks begin as `CANDIDATE`.
+- Funnel decisions promote tasks into `ANCHOR`, `ICEBREAKER`, `PENDING`, or `DRAWER`.
+- `startTime`, `dateStr`, `status`, and `isAnchor` must stay coherent.
+- frozen tasks are represented by `isFrozen`.
+- completed tasks can feed Forest growth and quarterly review behavior.
 
-- `App.tsx`
-- `store/useUserStore.ts`
+### Auth And Sync
 
-### If You Need To Change Auth
+- unauthenticated users must not behave like authenticated users
+- refresh-token-based access recovery must remain intact
+- initial hydration and later save sync must not race in a way that drops state
 
-Start here:
+### AI Resilience
 
-- `store/useAuthStore.ts`
-- `services/authApi.ts`
-- `server/routes/auth.js`
-- `server/lib/tokens.js`
-- `server/middleware/requireAuth.js`
+- AI-dependent flows must fail safely
+- fallback behavior must still produce usable output for the user
+- machine-readable prompt outputs must remain machine-readable
 
-Check impact on:
+### Daily Reset
 
-- `App.tsx`
-- all authenticated fetches in `services/userDataApi.ts`
-
-### If You Need To Change Quarterly Themes / Compass / Forest
-
-Start here:
-
-- `components/EchoCompass.tsx`
-- `components/EchoOnboarding.tsx`
-- `services/geminiService.ts`
-- `skills/leaf-merge.md`
-- `skills/quarterly-review.md`
-
-Check impact on:
-
-- `types.ts`
-- `store/useUserStore.ts`
-- `server/routes/focusThemes.js`
-
-## Component Guidance
-
-These notes are based on the current component design and should guide future edits.
-
-### `FocusFunnel.tsx`
-
-This component mixes:
-
-- AI generation
-- preview editing
-- funnel question flow
-- revival of icebox tasks
-- assignment of initial schedule metadata
-
-Be careful here. Small edits can affect multiple downstream states.
-
-When modifying it:
-
-- trace every place `generatedTasks` changes status
-- verify subsequent mode and first-time mode still both work
-- verify revived icebox tasks remain consistent with `isFrozen` handling
-- verify final emitted tasks still satisfy Timeline expectations
-
-### `FluidTimeline.tsx`
-
-This file contains heavy interaction logic:
-
-- drag/move/resize
-- collision resolution
-- task editing modal
-- drawer/icebox movement
-- completion interactions
-
-When modifying it:
-
-- protect the relationship between `status`, `isAnchor`, `startTime`, and `dateStr`
-- avoid introducing silent mutations that break collision resolution
-- sanity-check both scheduled tasks and unscheduled drawer/icebox tasks
-
-### `App.tsx`
-
-This is an orchestration layer, not just a shell.
-
-When modifying it:
-
-- be careful with hydration order
-- be careful with sync timing and debounce behavior
-- do not duplicate store logic that belongs in Zustand or services
-
-## Prompt Asset Guidance
-
-The markdown files in `skills/` are part of the application logic.
-
-Treat them like code:
-
-- make changes intentionally
-- preserve required structure
-- keep variables aligned with `fillTemplate`
-- keep downstream parsing in mind
-
-If a prompt output is parsed as JSON:
-
-- explicitly keep JSON-only instructions
-- avoid adding explanatory prose around the output
-- verify parser assumptions in `geminiService.ts`
-
-## Verification Checklist
-
-There is limited automated test coverage in this repository, so manual verification matters.
-
-After meaningful changes, verify the affected flow locally.
-
-### Minimum Frontend Checks
-
-- app loads without crashing
-- auth gate still behaves correctly
-- Funnel can generate tasks
-- generated tasks can be edited
-- Timeline can save and display tasks
-- task completion still works
-
-### If You Touched Funnel Or AI Logic
-
-- brain-dump input still produces tasks
-- JSON parsing paths still succeed
-- fallback behavior still returns usable tasks when AI calls fail
-- first-time and subsequent funnel flows still render coherent options
-
-### If You Touched Timeline Logic
-
-- drag and resize still work
-- drawer tasks remain unscheduled until placed
-- icebox melt/shatter behavior still works
-- anchor scheduling remains sequential
-
-### If You Touched Persistence Or Auth
-
-- login/logout/refresh still behave correctly
-- tasks can be fetched and saved
-- focus themes can be fetched and saved
-- protected routes still reject unauthenticated access
-
-## Commands
-
-Common local commands:
-
-```bash
-npm run dev
-npm run server
-npm run dev:full
-npm run build
-npm run prisma:generate
-npm run prisma:migrate
-npm run prisma:dev
-```
-
-## Environment Notes
-
-Expected environment variables include values like:
-
-- `DATABASE_URL`
-- `DASHSCOPE_API_KEY`
-- `DASHSCOPE_BASE_URL`
-- `QWEN_CHAT_MODEL`
-- `QWEN_EMBED_MODEL`
-- auth token secrets used by the backend auth routes
-
-Do not hardcode secrets or provider keys into client code.
-
-## Known Sharp Edges
-
-- `services/geminiService.ts` still uses legacy naming even though the live provider path is Qwen via local proxy.
-- Some files contain encoding artifacts in comments and strings; avoid broad cleanup unless it is the task, because wide text churn will make review harder.
-- `FluidTimeline.tsx` is large and interaction-dense; prefer targeted edits.
-- Task persistence currently replaces the user's full saved task set on `PUT /api/tasks`; avoid partial-save assumptions.
-
-## Preferred Style For Future Agents
-
-- Make narrow, high-confidence edits.
-- Follow existing architecture before inventing new layers.
-- Update shared types before patching around them.
-- Preserve product terminology and user-facing intent.
-- When changing AI behavior, keep the UX resilient if model output is imperfect.
+- daily reset behavior in `store/useUserStore.ts` is product logic
+- unfinished anchors must transition according to current reset rules
 
 ## Definition Of Done
 
-A change is not done just because the code compiles.
+A change is done only when:
 
-For Echo_web, done usually means:
-
-- the changed flow still works end-to-end
-- shared task semantics remain consistent
-- persistence and hydration still make sense
+- the affected flow still works end-to-end
+- shared task semantics remain coherent
+- persistence and hydration behavior still make sense
 - AI-dependent paths still fail safely
-- the next agent can understand why the code is shaped the way it is
+- required docs and verification updates are complete for the scope of the change

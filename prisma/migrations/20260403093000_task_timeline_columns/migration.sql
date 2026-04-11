@@ -21,7 +21,19 @@ SET
   "completed" = COALESCE((payload->>'completed')::boolean, "completed"),
   "date_str" = COALESCE(payload->>'dateStr', "date_str"),
   "start_time" = COALESCE(payload->>'startTime', "start_time"),
-  "duration" = COALESCE((payload->>'duration')::integer, "duration");
+  -- Column starts NULL; COALESCE(..., "duration") would keep NULL when JSON omits duration.
+  -- Default matches server normalizeTaskForStorage (tasks.js) so denormalized column is safe for queries.
+  -- Regex avoids ::integer cast errors on non-numeric JSON text.
+  "duration" = GREATEST(1, COALESCE(
+    CASE
+      WHEN (payload->>'duration') IS NOT NULL
+        AND btrim(payload->>'duration') <> ''
+        AND (payload->>'duration') ~ '^[0-9]+(\.[0-9]+)?$'
+      THEN ROUND((payload->>'duration')::numeric)::integer
+      ELSE NULL
+    END,
+    30
+  ));
 
 CREATE INDEX "Task_user_id_date_str_idx" ON "Task"("user_id", "date_str");
 CREATE INDEX "Task_user_id_status_idx" ON "Task"("user_id", "status");

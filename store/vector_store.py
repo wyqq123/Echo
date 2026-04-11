@@ -393,8 +393,8 @@ class EchoTemplateMilvusStore:
                         tpl = {"raw_payload_json": payload}
                 else:
                     tpl = {}
-                tpl["_distance"] = hit.get("distance")
-                tpl["_score"] = hit.get("score")
+                tpl["_distance"] = getattr(hit, "distance", None)
+                tpl["_score"] = getattr(hit, "score", None)
                 hits.append(tpl)
         return hits
 

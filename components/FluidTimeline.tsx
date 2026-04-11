@@ -164,6 +164,9 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
     startedOffTimeline: boolean;
     originalTasks: Task[];
     originalDateStr?: string;
+    /** Visible timeline columns at drag start — anchor navigation must not remap drops mid-drag */
+    timelineLeftDateStr: string;
+    timelineRightDateStr: string;
   } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -182,24 +185,41 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
     if (!currentTask) return state.originalTasks;
 
     const rect = containerRef.current.getBoundingClientRect();
+    const deltaPx = eventLike.clientY - state.startY;
+    const deltaMinutes = Math.round((deltaPx / MINUTE_HEIGHT) / SNAP_MINUTES) * SNAP_MINUTES;
+
     const clickX = eventLike.clientX - rect.left;
     const timelineContentX = clickX - TIME_LABEL_WIDTH;
     const columnWidth = (rect.width - TIME_LABEL_WIDTH) / 2;
-    const targetDate =
-      timelineContentX < columnWidth ? leftDate : rightDate;
-    const targetDateStr = format(targetDate, 'yyyy-MM-dd');
 
-    const absoluteY = eventLike.clientY - rect.top + containerRef.current.scrollTop;
-    const startMins = clampMinutes(pxToMinutes(absoluteY));
+    let targetDateStr = state.originalDateStr;
+    if (timelineContentX > 0 && timelineContentX < columnWidth * 2) {
+      targetDateStr =
+        timelineContentX < columnWidth ? state.timelineLeftDateStr : state.timelineRightDateStr;
+    }
+
+    let newStart = state.originalStart;
+    let newDuration = state.originalDuration;
+
+    if (state.startedOffTimeline && state.type === 'move') {
+      const absoluteY = eventLike.clientY - rect.top + containerRef.current.scrollTop;
+      newStart = clampMinutes(pxToMinutes(absoluteY));
+    } else if (state.type === 'move') {
+      newStart = clampMinutes(state.originalStart + deltaMinutes);
+    } else {
+      newDuration = Math.max(15, state.originalDuration + deltaMinutes);
+    }
 
     const updatedActiveTask: Task = {
       ...currentTask,
       isFrozen: false,
       status: getScheduledStatus(currentTask),
-      startTime: minutesToTime(startMins),
+      startTime: minutesToTime(newStart),
+      duration: newDuration,
       dateStr: targetDateStr,
     };
 
+    // Match handleMouseMove: same base list as live preview so concurrent task updates are not dropped on mouseup-only finalize.
     return placeTaskOnTimeline(updatedActiveTask, tasks);
   };
 
@@ -405,7 +425,9 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       originalDuration: task.duration,
       startedOffTimeline: !task.startTime || !task.dateStr || task.isFrozen,
       originalTasks: tasks.map(item => ({ ...item })),
-      originalDateStr: dateStr
+      originalDateStr: dateStr,
+      timelineLeftDateStr: format(leftDate, 'yyyy-MM-dd'),
+      timelineRightDateStr: format(rightDate, 'yyyy-MM-dd'),
     });
   };
 
@@ -428,8 +450,10 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       
       let targetDateStr = dragState.originalDateStr;
       if (timelineContentX > 0 && timelineContentX < columnWidth * 2) {
-         const targetDate = timelineContentX < columnWidth ? leftDate : rightDate;
-         targetDateStr = format(targetDate, 'yyyy-MM-dd');
+        targetDateStr =
+          timelineContentX < columnWidth
+            ? dragState.timelineLeftDateStr
+            : dragState.timelineRightDateStr;
       }
 
       let newStart = dragState.originalStart;
@@ -502,7 +526,7 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, tasks, onUpdateTasks, leftDate, rightDate]);
+  }, [dragState, tasks, onUpdateTasks]);
 
   return (
     <div className="flex flex-col h-full bg-[#0f172a] overflow-hidden font-sans select-none">

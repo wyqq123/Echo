@@ -1,0 +1,563 @@
+﻿openapi: 3.1.0
+info:
+  title: Echo Web API
+  version: 0.1.0
+  description: |
+    Current API contract for the Echo_web backend based on the existing Express routes.
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+tags:
+  - name: Auth
+  - name: Profile
+  - name: Tasks
+  - name: FocusThemes
+  - name: FunnelRuns
+  - name: AIProxy
+  - name: Health
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Health and provider status
+      responses:
+        '200':
+          description: Health information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  provider:
+                    type: string
+                  hasDashscopeKey:
+                    type: boolean
+                  baseURL:
+                    type: string
+                  chatModel:
+                    type: string
+                  embedModel:
+                    type: string
+                  database:
+                    type: boolean
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '201':
+          description: Registration success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Refresh success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, accessToken]
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+                  accessToken:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout by deleting refresh token if provided
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Logout success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/me:
+    get:
+      tags: [Profile]
+      summary: Get current user profile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/me/onboarding-complete:
+    put:
+      tags: [Profile]
+      summary: Complete onboarding and optionally save quarterly themes
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [displayName, fieldDomain, roleIds]
+              properties:
+                displayName:
+                  type: string
+                avatarUrl:
+                  oneOf:
+                    - type: string
+                    - type: 'null'
+                fieldDomain:
+                  type: string
+                roleIds:
+                  type: array
+                  items:
+                    type: string
+                skippedQuarterlyThemes:
+                  type: boolean
+                themes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FocusTheme'
+      responses:
+        '200':
+          description: Onboarding saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  user:
+                    $ref: '#/components/schemas/Profile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/tasks:
+    get:
+      tags: [Tasks]
+      summary: Fetch all tasks for current user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tasks list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [Tasks]
+      summary: Replace full task set for current user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tasks]
+              properties:
+                tasks:
+                  type: array
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id:
+                        type: string
+      responses:
+        '200':
+          description: Save success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/focus-themes:
+    get:
+      tags: [FocusThemes]
+      summary: Fetch focus themes for current user
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Theme list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  themes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FocusTheme'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [FocusThemes]
+      summary: Replace full focus theme set for current user
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [themes]
+              properties:
+                themes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FocusTheme'
+      responses:
+        '200':
+          description: Save success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/funnel-runs:
+    post:
+      tags: [FunnelRuns]
+      summary: Record funnel run analytics
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isSubsequent, script]
+              properties:
+                isSubsequent:
+                  type: boolean
+                script:
+                  type: object
+                inputSummary:
+                  type: string
+                  maxLength: 500
+      responses:
+        '201':
+          description: Funnel run recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  createdAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/qwen/generate-content:
+    post:
+      tags: [AIProxy]
+      summary: Generate chat content via server-side Qwen proxy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contents]
+              properties:
+                model:
+                  type: string
+                contents:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items:
+                        type: string
+                config:
+                  type: object
+      responses:
+        '200':
+          description: Generated text
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/qwen/embed-content:
+    post:
+      tags: [AIProxy]
+      summary: Generate embeddings via server-side Qwen proxy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contents]
+              properties:
+                model:
+                  type: string
+                contents:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items:
+                        type: string
+      responses:
+        '200':
+          description: Embedding vectors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  embeddings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        values:
+                          type: array
+                          items:
+                            type: number
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    BadRequest:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    User:
+      type: object
+      required: [id, email, createdAt]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    Profile:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties:
+            displayName:
+              type: string
+            avatarUrl:
+              type: string
+            roleIds:
+              type: array
+              items:
+                type: string
+            fieldDomain:
+              type: string
+            onboardingCompletedAt:
+              type: string
+              format: date-time
+    AuthSession:
+      type: object
+      required: [user, accessToken, refreshToken]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+    FocusTheme:
+      type: object
+      required: [id, intent]
+      properties:
+        id:
+          type: string
+        intent:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        isPrimary:
+          type: boolean
