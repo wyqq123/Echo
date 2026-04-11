@@ -29,10 +29,17 @@ router.get('/', requireAuth, async (req, res) => {
     });
     const tasks = rows.map((r) => {
       const p = r.payload;
-      if (p && typeof p === 'object' && !Array.isArray(p)) {
-        return { ...p, id: r.id };
-      }
-      return { id: r.id };
+      const base =
+        p && typeof p === 'object' && !Array.isArray(p) ? { ...p, id: r.id } : { id: r.id };
+      const fromPayload = Number(base.duration);
+      const fromColumn = Number(r.duration);
+      const duration =
+        Number.isFinite(fromPayload) && fromPayload > 0
+          ? Math.max(1, Math.round(fromPayload))
+          : Number.isFinite(fromColumn) && fromColumn > 0
+            ? Math.max(1, Math.round(fromColumn))
+            : 30;
+      return { ...base, duration };
     });
     res.json({ tasks });
   } catch (e) {

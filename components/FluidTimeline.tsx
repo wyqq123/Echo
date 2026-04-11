@@ -182,25 +182,41 @@ const FluidTimeline: React.FC<Props> = ({ tasks, onToggleTask, onUpdateTasks }) 
     if (!currentTask) return state.originalTasks;
 
     const rect = containerRef.current.getBoundingClientRect();
+    const deltaPx = eventLike.clientY - state.startY;
+    const deltaMinutes = Math.round((deltaPx / MINUTE_HEIGHT) / SNAP_MINUTES) * SNAP_MINUTES;
+
     const clickX = eventLike.clientX - rect.left;
     const timelineContentX = clickX - TIME_LABEL_WIDTH;
     const columnWidth = (rect.width - TIME_LABEL_WIDTH) / 2;
-    const targetDate =
-      timelineContentX < columnWidth ? leftDate : rightDate;
-    const targetDateStr = format(targetDate, 'yyyy-MM-dd');
 
-    const absoluteY = eventLike.clientY - rect.top + containerRef.current.scrollTop;
-    const startMins = clampMinutes(pxToMinutes(absoluteY));
+    let targetDateStr = state.originalDateStr;
+    if (timelineContentX > 0 && timelineContentX < columnWidth * 2) {
+      const targetDate = timelineContentX < columnWidth ? leftDate : rightDate;
+      targetDateStr = format(targetDate, 'yyyy-MM-dd');
+    }
+
+    let newStart = state.originalStart;
+    let newDuration = state.originalDuration;
+
+    if (state.startedOffTimeline && state.type === 'move') {
+      const absoluteY = eventLike.clientY - rect.top + containerRef.current.scrollTop;
+      newStart = clampMinutes(pxToMinutes(absoluteY));
+    } else if (state.type === 'move') {
+      newStart = clampMinutes(state.originalStart + deltaMinutes);
+    } else {
+      newDuration = Math.max(15, state.originalDuration + deltaMinutes);
+    }
 
     const updatedActiveTask: Task = {
       ...currentTask,
       isFrozen: false,
       status: getScheduledStatus(currentTask),
-      startTime: minutesToTime(startMins),
+      startTime: minutesToTime(newStart),
+      duration: newDuration,
       dateStr: targetDateStr,
     };
 
-    return placeTaskOnTimeline(updatedActiveTask, tasks);
+    return placeTaskOnTimeline(updatedActiveTask, state.originalTasks);
   };
 
   const placeTaskOnTimeline = (taskToPlace: Task, sourceTasks: Task[]) => {
